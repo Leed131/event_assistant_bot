@@ -6,6 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.academy_search import search_royal_danish_academy_events
 from app.bloxhub_source import BloxhubSource
+from app.dac_search import search_dac_talks
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
 from app.eventbrite_search import search_eventbrite_events
 from app.source_overrides import parser_for_source
@@ -84,6 +85,13 @@ async def _candidates_for_source(source: Source):
 
     parser = parser_for_source(source.url, source.source_type)
     candidates = await parser.fetch(source.url)
+
+    if host == "dac.dk" or host.endswith(".dac.dk"):
+        web_candidates = await search_dac_talks()
+        by_key = {candidate.dedup_key: candidate for candidate in candidates}
+        for candidate in web_candidates:
+            by_key.setdefault(candidate.dedup_key, candidate)
+        candidates = list(by_key.values())
 
     if (
         host == "kglakademi.dk"
