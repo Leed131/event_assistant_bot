@@ -50,6 +50,9 @@ def main() -> None:
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
     logger = logging.getLogger(__name__)
 
+    if not settings.telegram_bot_token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is required for the Telegram worker")
+
     init_db()
     lock_connection = wait_for_polling_lock(logger)
     logger.info("Telegram polling lock acquired; starting bot.")
