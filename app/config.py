@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    telegram_bot_token: str
+    telegram_bot_token: str | None = None
     database_url: str
     openai_api_key: str | None = None
     app_env: str = "development"
