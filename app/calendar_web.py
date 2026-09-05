@@ -75,12 +75,6 @@ def _google_calendar_url(event: Event) -> str:
 
 
 def _shortcut_url(event: Event) -> str:
-    """Build a Shortcuts deep link carrying all event fields as JSON text.
-
-    The user creates one reusable iPhone Shortcut named Event Assistant Calendar.
-    After that, this link launches the Shortcut directly from the browser and the
-    Shortcut creates a native Apple Calendar event.
-    """
     end = event.end_datetime or (event.start_datetime + timedelta(hours=2))
     location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
     notes = event.description or ""
@@ -122,6 +116,7 @@ def calendar_page(event_id: int) -> str:
     location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
     google_url = _google_calendar_url(event)
     shortcut_url = _shortcut_url(event)
+    create_shortcut_url = "shortcuts://create-shortcut"
     apple_ics_url = f"/calendar/{event.id}/apple"
     fallback_url = f"/calendar/{event.id}/download"
     register = event.registration_url or event.source_url or "#"
@@ -139,11 +134,12 @@ def calendar_page(event_id: int) -> str:
     h2 {{ font-size:18px; margin:28px 0 10px; }}
     .meta {{ line-height:1.5; color:#444; margin-bottom:24px; }}
     .btn {{ display:block; text-decoration:none; text-align:center; padding:16px 18px; border-radius:14px; margin:12px 0; font-weight:700; background:#111; color:white; }}
-    .btn.apple {{ background:#111; }}
     .btn.secondary {{ background:#e9e9ee; color:#111; }}
+    .btn.setupbtn {{ background:#dfe7ff; color:#111; }}
     .small {{ font-size:13px; color:#666; margin-top:14px; line-height:1.5; }}
     .setup {{ background:#f3f3f6; border-radius:14px; padding:16px; font-size:14px; line-height:1.55; }}
     .setup ol {{ padding-left:22px; margin:8px 0 0; }}
+    .warning {{ background:#fff4cc; border-radius:12px; padding:12px 14px; margin:14px 0; font-size:14px; line-height:1.45; }}
     .fallback {{ font-size:13px; text-align:center; margin-top:14px; }}
     .fallback a {{ color:#555; }}
   </style>
@@ -153,32 +149,37 @@ def calendar_page(event_id: int) -> str:
     <h1>{escape(event.title)}</h1>
     <div class="meta">📅 {escape(when)}<br>📍 {escape(location)}</div>
 
-    <a class="btn apple" href="{escape(shortcut_url)}"> Add to Apple Calendar</a>
+    <div class="warning">
+      <b>Apple Calendar:</b> first create the Shortcut once. If you tap the run button before the Shortcut exists,
+      iPhone opens Shortcuts search and shows an empty screen — exactly what you saw.
+    </div>
+
+    <a class="btn setupbtn" href="{create_shortcut_url}">1. First time: create Apple Shortcut</a>
+    <a class="btn" href="{escape(shortcut_url)}">2. Shortcut ready: add to Apple Calendar</a>
     <a class="btn secondary" href="{escape(google_url)}">Add to Google Calendar</a>
     <a class="btn secondary" href="{escape(register)}">Open registration page</a>
 
-    <div class="small">
-      Apple button uses one reusable iPhone Shortcut. After the Shortcut is set up once,
-      tapping this button can create the event directly in Apple Calendar without saving files.
+    <h2>One-time Apple setup</h2>
+    <div class="setup">
+      <ol>
+        <li>Tap <b>1. First time: create Apple Shortcut</b>.</li>
+        <li>In Shortcuts, create a new shortcut and name it exactly <b>{SHORTCUT_NAME}</b>.</li>
+        <li>Add the action <b>Get Dictionary from Input</b> and use <b>Shortcut Input</b>.</li>
+        <li>Read these dictionary keys: <b>title</b>, <b>start</b>, <b>end</b>, <b>location</b>, <b>notes</b>.</li>
+        <li>Add the Calendar action <b>Add New Event</b>.</li>
+        <li>Map title → Title, start → Start Date, end → End Date, location → Location, notes → Notes.</li>
+        <li>Save the Shortcut. You only do this once.</li>
+      </ol>
+      Then return to Telegram and use <b>2. Shortcut ready: add to Apple Calendar</b> for any event.
     </div>
 
-    <h2>First-time Apple setup</h2>
-    <div class="setup">
-      Create one Shortcut on your iPhone named <b>{SHORTCUT_NAME}</b>:
-      <ol>
-        <li>Open the <b>Shortcuts</b> app and create a new shortcut.</li>
-        <li>Name it <b>{SHORTCUT_NAME}</b>.</li>
-        <li>Add <b>Get Dictionary from Input</b> (Shortcut Input).</li>
-        <li>Read the dictionary keys: <b>title</b>, <b>start</b>, <b>end</b>, <b>location</b>, <b>notes</b>.</li>
-        <li>Add <b>Add New Event</b> and map those values to Title, Start Date, End Date, Location and Notes.</li>
-        <li>Choose your Apple Calendar and enable <b>Show When Run</b> if you want confirmation before saving.</li>
-      </ol>
-      After that, return here and tap <b> Add to Apple Calendar</b> again.
+    <div class="small">
+      Apple only allows a web link to run a Shortcut that already exists in your collection. It cannot silently install the Shortcut for you.
     </div>
 
     <div class="fallback">
-      No Shortcut yet? <a href="{apple_ics_url}">open the .ics preview</a> or
-      <a href="{fallback_url}">download the .ics file</a>.
+      Prefer not to set up Shortcuts? Use <b>Google Calendar</b>, or
+      <a href="{apple_ics_url}">open the .ics preview</a> / <a href="{fallback_url}">download .ics</a>.
     </div>
   </div>
 </body>
