@@ -24,7 +24,6 @@ def matches(user: User, event: Event) -> bool:
 
 
 def _refresh_existing_event(event: Event, candidate) -> None:
-    """Update mutable event data when a source publishes corrections."""
     event.external_id = candidate.external_id
     event.title = candidate.title
     event.description = candidate.description
@@ -42,15 +41,13 @@ def _refresh_existing_event(event: Event, candidate) -> None:
 
 
 def _hide_stale_discovered_items(db, source: Source, candidate_keys: set[str]) -> None:
-    """Remove stale auto-discovered cards for parsers we fully control.
-
-    Registered items are deliberately preserved. This is important when a parser
-    improves: old false positives (for example article publication dates or DAC
-    guided tours) should disappear from Discover without deleting a user's saved
-    registration.
-    """
     host = urlparse(source.url).netloc.casefold().removeprefix("www.")
-    if not (host.endswith("dagensbyggeri.dk") or host.endswith("dac.dk")):
+    if not (
+        host.endswith("dagensbyggeri.dk")
+        or host.endswith("dac.dk")
+        or host.endswith("kglakademi.dk")
+        or host.endswith("royaldanishacademy.com")
+    ):
         return
 
     source_events = db.scalars(select(Event).where(Event.source_id == source.id)).all()
@@ -72,7 +69,12 @@ async def _candidates_for_source(source: Source):
     candidates = await parser.fetch(source.url)
 
     host = urlparse(source.url).netloc.casefold().removeprefix("www.")
-    if host == "kglakademi.dk" or host.endswith(".kglakademi.dk"):
+    if (
+        host == "kglakademi.dk"
+        or host.endswith(".kglakademi.dk")
+        or host == "royaldanishacademy.com"
+        or host.endswith(".royaldanishacademy.com")
+    ):
         web_candidates = await search_royal_danish_academy_events()
         by_key = {candidate.dedup_key: candidate for candidate in candidates}
         for candidate in web_candidates:
