@@ -16,6 +16,28 @@ services:
         value: production
       - key: DEFAULT_TIMEZONE
         value: Europe/Copenhagen
+      - key: PUBLIC_BASE_URL
+        value: https://event-assistant-calendar.onrender.com
+
+  - type: web
+    name: event-assistant-calendar
+    runtime: docker
+    plan: starter
+    dockerCommand: uvicorn app.calendar_web:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: event-assistant-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: DEFAULT_TIMEZONE
+        value: Europe/Copenhagen
+      - key: PUBLIC_BASE_URL
+        value: https://event-assistant-calendar.onrender.com
 
 databases:
   - name: event-assistant-db
