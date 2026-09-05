@@ -5,14 +5,14 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
 
-USER_AGENT = "EventAssistantBot/0.2"
+USER_AGENT = "EventAssistantBot/0.3"
 
 MONTHS_DA = {
     "jan": 1, "januar": 1,
@@ -30,12 +30,12 @@ MONTHS_DA = {
 }
 
 DATE_RE = re.compile(
-    r"\b(?:den\s+|d\.?\s*)?(?P<day>\d{1,2})\.?"
-    r"(?:\s*og\s*\d{1,2}\.)?\s+"
+    r"\b(?:den\s+|d\.?\s*)?(?P<day>\d{1,2})\.?(?:\s*og\s*\d{1,2}\.)?\s+"
     r"(?P<month>jan(?:uar)?|feb(?:ruar)?|mar(?:ts)?|apr(?:il)?|maj|jun(?:i)?|jul(?:i)?|aug(?:ust)?|sep(?:tember)?|okt(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
     r"(?:\s+(?P<year>20\d{2}))?\b",
     re.IGNORECASE,
 )
+TIME_RE = re.compile(r"\b(?:At|Kl\.?|at)\s*(?P<hour>\d{1,2})[:.]?(?P<minute>\d{2})?\b", re.IGNORECASE)
 
 
 @dataclass
@@ -94,6 +94,13 @@ def _parse_danish_date(text: str, now: datetime | None = None) -> datetime | Non
 
     future = [value for value in candidates if value >= now]
     return min(future) if future else (max(candidates) if candidates else None)
+
+
+def _time_from_text(text: str) -> tuple[int, int]:
+    match = TIME_RE.search(text)
+    if not match:
+        return 12, 0
+    return int(match.group("hour")), int(match.group("minute") or 0)
 
 
 class GenericJsonLdSource(BaseEventSource):
@@ -159,8 +166,83 @@ class GenericJsonLdSource(BaseEventSource):
         return found
 
 
-class DACSource(GenericJsonLdSource):
+class DACSource(BaseEventSource):
     name = "Danish Architecture Center"
+    calendar_url = "https://dac.dk/en/calendar"
+
+    async def fetch(self, url: str) -> list[EventCandidate]:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30,
+            headers={"User-Agent": USER_AGENT},
+        ) as client:
+            response = await client.get(self.calendar_url)
+            response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        now = datetime.now(timezone.utc)
+        found: list[EventCandidate] = []
+        seen: set[str] = set()
+
+        # DAC calendar links contain /events/ and normally a ?date=YYYY-MM-DD query.
+        for anchor in soup.find_all("a", href=True):
+            href = urljoin(self.calendar_url, anchor["href"])
+            parsed = urlparse(href)
+            if not parsed.netloc.endswith("dac.dk") or "/events/" not in parsed.path:
+                continue
+
+            text = anchor.get_text(" ", strip=True)
+            if not text:
+                continue
+
+            query = parse_qs(parsed.query)
+            date_value = (query.get("date") or [None])[0]
+            start_date: datetime | None = None
+            if date_value:
+                try:
+                    start_date = datetime.strptime(date_value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    start_date = None
+            if start_date is None:
+                start_date = _parse_danish_date(text, now=now)
+            if start_date is None:
+                continue
+
+            hour, minute = _time_from_text(text)
+            start = start_date.replace(hour=hour, minute=minute)
+            if start < now:
+                continue
+
+            clean_url = href.split("#", 1)[0]
+            event_key = clean_url
+            if event_key in seen:
+                continue
+            seen.add(event_key)
+
+            # Strip common category/time prefixes from card text for a cleaner title.
+            title = re.sub(r"^(Tours|Kids and family|Exhibition and Café|Exhibitions?)\s+", "", text, flags=re.IGNORECASE)
+            title = re.sub(r"^(?:At|Kl\.?)\s*\d{1,2}[:.]?\d{0,2}\s+", "", title, flags=re.IGNORECASE)
+            title = title[:300].strip()
+
+            found.append(
+                EventCandidate(
+                    title=title or "DAC event",
+                    description=text[:700],
+                    start_datetime=start,
+                    city="Copenhagen",
+                    venue_name="Danish Architecture Center (DAC)",
+                    address="Bryghuspladsen 10, 1473 Copenhagen K",
+                    registration_url=clean_url,
+                    source_url=clean_url,
+                    source_name=self.name,
+                    external_id=clean_url,
+                )
+            )
+
+        # Fallback to JSON-LD if DAC changes its calendar markup.
+        if not found:
+            return await GenericJsonLdSource().fetch(self.calendar_url)
+        found.sort(key=lambda item: item.start_datetime)
+        return found
 
 
 class DagensByggeriSource(BaseEventSource):
@@ -224,14 +306,6 @@ class DagensByggeriSource(BaseEventSource):
 
 
 class RoyalDanishAcademySource(BaseEventSource):
-    """Public-lecture fallback for kglakademi.dk.
-
-    The main Academy site does not consistently expose Schema.org Event data to
-    simple HTTP clients. The Academy's public research portal exposes activities
-    filtered as public lectures, so we use that official public source as a
-    fallback when a user adds kglakademi.dk.
-    """
-
     name = "The Royal Danish Academy"
     public_lectures_url = (
         "https://adk.elsevierpure.com/da/organisations/"
@@ -292,6 +366,6 @@ def parser_for_url(url: str, source_type: str | None = None) -> BaseEventSource:
         return DagensByggeriSource()
     if host == "kglakademi.dk" or host.endswith(".kglakademi.dk"):
         return RoyalDanishAcademySource()
-    if source_type == "curated" and host.endswith("dac.dk"):
+    if host.endswith("dac.dk"):
         return DACSource()
     return GenericJsonLdSource()
