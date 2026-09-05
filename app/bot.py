@@ -6,7 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
-from app.sources import GenericJsonLdSource
+from app.sources import parser_for_url
 
 
 def menu() -> InlineKeyboardMarkup:
@@ -26,6 +26,19 @@ def sources_menu() -> InlineKeyboardMarkup:
     ])
 
 
+def interests_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add interest", callback_data="interest:add")],
+        [InlineKeyboardButton("➖ Remove interest", callback_data="interest:remove")],
+        [InlineKeyboardButton("📋 My interests", callback_data="interest:list")],
+        [InlineKeyboardButton("⬅️ Main menu", callback_data="main")],
+    ])
+
+
+def _interest_list(raw: str | None) -> list[str]:
+    return [item.strip() for item in (raw or "").split(",") if item.strip()]
+
+
 def get_or_create_user(tg_user) -> User:
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.telegram_user_id == tg_user.id))
@@ -43,6 +56,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hi {user.first_name or ''}! I find events before they sell out and keep your registrations, tickets and reminders in one place.",
         reply_markup=menu(),
     )
+
+
+async def show_interests(message, user: User) -> None:
+    interests = _interest_list(user.interests)
+    if not interests:
+        await message.reply_text("You do not have any interests yet.", reply_markup=interests_menu())
+        return
+    formatted = "\n".join(f"• {interest}" for interest in interests)
+    await message.reply_text(f"❤️ Your interests\n\n{formatted}", reply_markup=interests_menu())
 
 
 async def show_sources(message, user: User) -> None:
@@ -83,6 +105,33 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "main":
         await q.message.reply_text("Main menu", reply_markup=menu())
         return
+
+    if q.data == "interests":
+        await q.message.reply_text(
+            "Manage the topics I use to filter events for you.",
+            reply_markup=interests_menu(),
+        )
+        return
+    if q.data == "interest:add":
+        context.user_data["awaiting_interest_add"] = True
+        await q.message.reply_text(
+            "Send the interest you want to add. You can add several at once separated by commas.\n\n"
+            "Example: AI, sustainability, women in AI, leadership"
+        )
+        return
+    if q.data == "interest:remove":
+        context.user_data["awaiting_interest_remove"] = True
+        interests = _interest_list(user.interests)
+        current = ", ".join(interests) if interests else "none"
+        await q.message.reply_text(
+            f"Current interests: {current}\n\n"
+            "Send the interest you want to remove. You can remove several at once separated by commas."
+        )
+        return
+    if q.data == "interest:list":
+        await show_interests(q.message, user)
+        return
+
     if q.data == "sources":
         await q.message.reply_text(
             "Manage the websites I monitor for you. You can add an events/calendar page directly from Telegram.",
@@ -181,14 +230,68 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif q.data == "city":
             context.user_data["setting"] = "city"
             await q.message.reply_text(f"Current city: {user.city}. Send a new city name.")
-        elif q.data == "interests":
-            context.user_data["setting"] = "interests"
-            await q.message.reply_text(f"Current interests: {user.interests}. Send comma-separated interests.")
 
 
 async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_or_create_user(update.effective_user)
     raw_text = (update.message.text or "").strip()
+
+    if context.user_data.pop("awaiting_interest_add", False):
+        new_items = _interest_list(raw_text)
+        if not new_items:
+            context.user_data["awaiting_interest_add"] = True
+            await update.message.reply_text("Please send at least one interest.")
+            return
+        with SessionLocal() as db:
+            db_user = db.get(User, user.id)
+            current = _interest_list(db_user.interests)
+            existing_keys = {item.casefold() for item in current}
+            added: list[str] = []
+            for item in new_items:
+                if item.casefold() not in existing_keys:
+                    current.append(item)
+                    existing_keys.add(item.casefold())
+                    added.append(item)
+            db_user.interests = ",".join(current)
+            db.commit()
+        if added:
+            await update.message.reply_text(
+                "✅ Added: " + ", ".join(added),
+                reply_markup=interests_menu(),
+            )
+        else:
+            await update.message.reply_text(
+                "Those interests are already in your list.",
+                reply_markup=interests_menu(),
+            )
+        return
+
+    if context.user_data.pop("awaiting_interest_remove", False):
+        remove_items = _interest_list(raw_text)
+        if not remove_items:
+            context.user_data["awaiting_interest_remove"] = True
+            await update.message.reply_text("Please send at least one interest to remove.")
+            return
+        remove_keys = {item.casefold() for item in remove_items}
+        with SessionLocal() as db:
+            db_user = db.get(User, user.id)
+            current = _interest_list(db_user.interests)
+            kept = [item for item in current if item.casefold() not in remove_keys]
+            removed = [item for item in current if item.casefold() in remove_keys]
+            db_user.interests = ",".join(kept)
+            db.commit()
+        if removed:
+            await update.message.reply_text(
+                "🗑 Removed: " + ", ".join(removed),
+                reply_markup=interests_menu(),
+            )
+        else:
+            await update.message.reply_text(
+                "I could not find those interests in your list.",
+                reply_markup=interests_menu(),
+            )
+        return
+
     parsed_text = urlparse(raw_text) if raw_text else None
     looks_like_url = bool(
         parsed_text
@@ -209,7 +312,7 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("🔎 Проверяю источник…")
         try:
-            detected_events = await GenericJsonLdSource().fetch(raw_url)
+            detected_events = await parser_for_url(raw_url, "user").fetch(raw_url)
         except Exception as exc:
             await update.message.reply_text(
                 f"Не получилось открыть эту страницу ({type(exc).__name__}). Проверь ссылку и попробуй ещё раз."
@@ -232,12 +335,12 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if detected_events:
             await update.message.reply_text(
-                f"✅ Источник добавлен. Я нашёл {len(detected_events)} структурированных событий на странице и буду её отслеживать.",
+                f"✅ Источник добавлен. Я нашёл {len(detected_events)} событий и буду его отслеживать.",
                 reply_markup=sources_menu(),
             )
         else:
             await update.message.reply_text(
-                "⚠️ Источник сохранён. На странице пока не найдено стандартных Event-данных. Я всё равно сохраню сайт; возможно, для него понадобится отдельный парсер.",
+                "⚠️ Источник сохранён. Пока я не нашёл будущих событий на этой странице. Я всё равно сохраню сайт и буду проверять его дальше.",
                 reply_markup=sources_menu(),
             )
         return
