@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -14,13 +15,20 @@ from app.sources import (
 )
 
 
-class DagensByggeriAccurateSource(BaseEventSource):
-    """Parse event dates from Dagens Byggeri articles without using publish dates.
+DATE_RANGE_RE = re.compile(
+    r"\b(?P<start_day>\d{1,2})\.?\s*[-–]\s*(?P<end_day>\d{1,2})\.?\s+"
+    r"(?P<month>jan(?:uar)?|feb(?:ruar)?|mar(?:ts)?|apr(?:il)?|maj|jun(?:i)?|jul(?:i)?|aug(?:ust)?|sep(?:tember)?|okt(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"(?:\s+(?P<year>20\d{2}))?\b",
+    re.IGNORECASE,
+)
 
-    Pages under /arrangementer/ are editorial articles about events. The page
-    contains both the article publication date and the actual event date. The
-    old parser could accidentally treat an undated event mention as next year.
-    Here an undated event date is anchored to the article's publication year.
+
+class DagensByggeriAccurateSource(BaseEventSource):
+    """Parse event dates from Dagens Byggeri editorial event articles.
+
+    These pages contain both an article publication date and a separate event
+    date, sometimes written as a date range such as "16.-17. september".
+    The event year is anchored to the article publication year when omitted.
     """
 
     name = "Dagens Byggeri"
@@ -46,8 +54,6 @@ class DagensByggeriAccurateSource(BaseEventSource):
             except ValueError:
                 continue
 
-        # Dagens Byggeri visibly prints publication dates such as
-        # "4. aug. 2026 - kl. 09:40". Prefer an explicit-year date.
         for match in DATE_RE.finditer(text):
             if not match.group("year"):
                 continue
@@ -67,16 +73,54 @@ class DagensByggeriAccurateSource(BaseEventSource):
                 continue
         return None
 
-    def _actual_event_date(self, text: str, published: datetime) -> datetime | None:
-        """Return the first plausible event date after article publication.
+    def _actual_event_dates(
+        self,
+        text: str,
+        published: datetime,
+    ) -> tuple[datetime | None, datetime | None]:
+        """Return the most plausible event start/end after publication.
 
-        If the article says only "28. august", the year is the publication
-        year, not automatically the next future year. This prevents 2026 events
-        from being fabricated as 2027 events after they have passed.
+        Date ranges are parsed before single dates, so "16.-17. september"
+        becomes a start on 16 September and an end on 17 September rather than
+        being misread as only 17 September.
         """
-        candidates: list[datetime] = []
         publication_day = published.date()
+        range_candidates: list[tuple[datetime, datetime]] = []
 
+        for match in DATE_RANGE_RE.finditer(text):
+            month = self._month_number(match.group("month"))
+            if not month:
+                continue
+            year = int(match.group("year")) if match.group("year") else published.year
+            try:
+                start = datetime(
+                    year,
+                    month,
+                    int(match.group("start_day")),
+                    12,
+                    0,
+                    tzinfo=timezone.utc,
+                )
+                end = datetime(
+                    year,
+                    month,
+                    int(match.group("end_day")),
+                    12,
+                    0,
+                    tzinfo=timezone.utc,
+                )
+            except ValueError:
+                continue
+            if start.date() <= publication_day:
+                continue
+            if end < start or (start - published).days > 370:
+                continue
+            range_candidates.append((start, end))
+
+        if range_candidates:
+            return min(range_candidates, key=lambda item: item[0])
+
+        candidates: list[datetime] = []
         for match in DATE_RE.finditer(text):
             month = self._month_number(match.group("month"))
             if not month:
@@ -94,15 +138,13 @@ class DagensByggeriAccurateSource(BaseEventSource):
             except ValueError:
                 continue
 
-            # Skip the article's own publication date and unrelated historical
-            # dates. An event promoted by the article should be after publishing.
             if candidate.date() <= publication_day:
                 continue
             if (candidate - published).days > 370:
                 continue
             candidates.append(candidate)
 
-        return min(candidates) if candidates else None
+        return (min(candidates), None) if candidates else (None, None)
 
     async def fetch(self, url: str) -> list[EventCandidate]:
         now = datetime.now(timezone.utc)
@@ -145,7 +187,7 @@ class DagensByggeriAccurateSource(BaseEventSource):
                 published = self._publication_date(page, text)
                 if not published:
                     continue
-                start = self._actual_event_date(text, published)
+                start, end = self._actual_event_dates(text, published)
                 if not start or start < now:
                     continue
 
@@ -162,6 +204,7 @@ class DagensByggeriAccurateSource(BaseEventSource):
                         title=title,
                         description=description,
                         start_datetime=start,
+                        end_datetime=end,
                         city=city,
                         registration_url=detail_url,
                         source_url=detail_url,
