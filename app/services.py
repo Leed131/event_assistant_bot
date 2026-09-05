@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
-from app.sources import parser_for_url
+from app.source_overrides import parser_for_source
 
 
 def matches(user: User, event: Event) -> bool:
@@ -72,7 +72,7 @@ async def refresh_curated_sources(bot=None) -> int:
         sources = db.scalars(select(Source).where(Source.active.is_(True))).all()
         for source in sources:
             try:
-                parser = parser_for_url(source.url, source.source_type)
+                parser = parser_for_source(source.url, source.source_type)
                 candidates = await parser.fetch(source.url)
             except Exception:
                 continue
