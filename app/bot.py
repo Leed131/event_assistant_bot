@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 from urllib.parse import urlparse
 
 from sqlalchemy import select
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
+from app.config import settings
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
 from app.source_overrides import parser_for_source
 
@@ -40,50 +40,8 @@ def _interest_list(raw: str | None) -> list[str]:
     return [item.strip() for item in (raw or "").split(",") if item.strip()]
 
 
-def _ics_escape(value: str | None) -> str:
-    text = (value or "").replace("\\", "\\\\")
-    text = text.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n")
-    return text.replace(",", "\\,").replace(";", "\\;")
-
-
-def _ics_datetime(value: datetime) -> str:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _event_ics(event: Event) -> bytes:
-    location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
-    description_parts = []
-    if event.description:
-        description_parts.append(event.description[:1200])
-    if event.registration_url:
-        description_parts.append(f"Registration: {event.registration_url}")
-    description = "\n\n".join(description_parts)
-
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//Event Assistant Bot//EN",
-        "CALSCALE:GREGORIAN",
-        "METHOD:PUBLISH",
-        "BEGIN:VEVENT",
-        f"UID:event-{event.id}@event-assistant-bot",
-        f"DTSTAMP:{_ics_datetime(datetime.now(timezone.utc))}",
-        f"DTSTART:{_ics_datetime(event.start_datetime)}",
-    ]
-    if event.end_datetime:
-        lines.append(f"DTEND:{_ics_datetime(event.end_datetime)}")
-    lines.extend([
-        f"SUMMARY:{_ics_escape(event.title)}",
-        f"LOCATION:{_ics_escape(location)}",
-        f"DESCRIPTION:{_ics_escape(description)}",
-        f"URL:{event.registration_url}",
-        "END:VEVENT",
-        "END:VCALENDAR",
-        "",
-    ])
-    return "\r\n".join(lines).encode("utf-8")
+def _calendar_url(event_id: int) -> str:
+    return f"{settings.public_base_url.rstrip('/')}/calendar/{event_id}"
 
 
 def get_or_create_user(tg_user) -> User:
@@ -124,11 +82,7 @@ async def show_sources(message, user: User) -> None:
             .order_by(Source.name)
         ).all()
 
-        if curated:
-            curated_text = "\n".join(f"✅ {source.name}\n{source.url}" for source in curated)
-        else:
-            curated_text = "No curated sources yet."
-
+        curated_text = "\n".join(f"✅ {source.name}\n{source.url}" for source in curated) if curated else "No curated sources yet."
         await message.reply_text(f"🏛 Curated sources\n\n{curated_text}")
 
         if not custom_rows:
@@ -154,44 +108,27 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if q.data == "interests":
-        await q.message.reply_text(
-            "Manage the topics I use to filter events for you.",
-            reply_markup=interests_menu(),
-        )
+        await q.message.reply_text("Manage the topics I use to filter events for you.", reply_markup=interests_menu())
         return
     if q.data == "interest:add":
         context.user_data["awaiting_interest_add"] = True
-        await q.message.reply_text(
-            "Send the interest you want to add. You can add several at once separated by commas.\n\n"
-            "Example: AI, sustainability, women in AI, leadership"
-        )
+        await q.message.reply_text("Send the interest you want to add. You can add several at once separated by commas.\n\nExample: AI, sustainability, women in AI, leadership")
         return
     if q.data == "interest:remove":
         context.user_data["awaiting_interest_remove"] = True
-        interests = _interest_list(user.interests)
-        current = ", ".join(interests) if interests else "none"
-        await q.message.reply_text(
-            f"Current interests: {current}\n\n"
-            "Send the interest you want to remove. You can remove several at once separated by commas."
-        )
+        current = ", ".join(_interest_list(user.interests)) or "none"
+        await q.message.reply_text(f"Current interests: {current}\n\nSend the interest you want to remove. You can remove several at once separated by commas.")
         return
     if q.data == "interest:list":
         await show_interests(q.message, user)
         return
 
     if q.data == "sources":
-        await q.message.reply_text(
-            "Manage the websites I monitor for you. You can add an events/calendar page directly from Telegram.",
-            reply_markup=sources_menu(),
-        )
+        await q.message.reply_text("Manage the websites I monitor for you. You can add an events/calendar page directly from Telegram.", reply_markup=sources_menu())
         return
     if q.data == "source:add":
         context.user_data["awaiting_source_url"] = True
-        await q.message.reply_text(
-            "Вставь ссылку на страницу мероприятий прямо в поле сообщения ниже и отправь её.\n\n"
-            "Например: https://example.org/events\n\n"
-            "Можно также просто прислать любую http/https ссылку боту без нажатия этой кнопки — я распознаю её как новый источник."
-        )
+        await q.message.reply_text("Вставь ссылку на страницу мероприятий прямо в поле сообщения ниже и отправь её.\n\nНапример: https://example.org/events\n\nМожно также просто прислать любую http/https ссылку боту без нажатия этой кнопки — я распознаю её как новый источник.")
         return
     if q.data == "source:list":
         await show_sources(q.message, user)
@@ -237,7 +174,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 event = db.get(Event, item.event_id)
                 buttons = [
                     [InlineKeyboardButton("🔗 Register", url=event.registration_url)],
-                    [InlineKeyboardButton("📅 Add to calendar", callback_data=f"cal:{item.id}")],
+                    [InlineKeyboardButton("📅 Add to calendar", url=_calendar_url(event.id))],
                 ]
                 if item.status != UserEventStatus.registered.value:
                     buttons.append([
@@ -253,21 +190,6 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}\n{item.note or ''}",
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
-        elif q.data.startswith("cal:"):
-            item = db.get(UserEvent, int(q.data.split(":")[1]))
-            if not item or item.user_id != user.id:
-                await q.message.reply_text("Event not found.")
-                return
-            event = db.get(Event, item.event_id)
-            if not event:
-                await q.message.reply_text("Event not found.")
-                return
-            filename = f"event-{event.id}.ics"
-            calendar_file = BytesIO(_event_ics(event))
-            await q.message.reply_document(
-                document=InputFile(calendar_file, filename=filename),
-                caption="📅 Open this file on iPhone and tap Add to save the event in Apple Calendar.",
-            )
         elif q.data.startswith("reg:"):
             item = db.get(UserEvent, int(q.data.split(":")[1]))
             item.status = UserEventStatus.registered.value
@@ -319,16 +241,7 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     added.append(item)
             db_user.interests = ",".join(current)
             db.commit()
-        if added:
-            await update.message.reply_text(
-                "✅ Added: " + ", ".join(added),
-                reply_markup=interests_menu(),
-            )
-        else:
-            await update.message.reply_text(
-                "Those interests are already in your list.",
-                reply_markup=interests_menu(),
-            )
+        await update.message.reply_text("✅ Added: " + ", ".join(added) if added else "Those interests are already in your list.", reply_markup=interests_menu())
         return
 
     if context.user_data.pop("awaiting_interest_remove", False):
@@ -345,24 +258,11 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
             removed = [item for item in current if item.casefold() in remove_keys]
             db_user.interests = ",".join(kept)
             db.commit()
-        if removed:
-            await update.message.reply_text(
-                "🗑 Removed: " + ", ".join(removed),
-                reply_markup=interests_menu(),
-            )
-        else:
-            await update.message.reply_text(
-                "I could not find those interests in your list.",
-                reply_markup=interests_menu(),
-            )
+        await update.message.reply_text("🗑 Removed: " + ", ".join(removed) if removed else "I could not find those interests in your list.", reply_markup=interests_menu())
         return
 
     parsed_text = urlparse(raw_text) if raw_text else None
-    looks_like_url = bool(
-        parsed_text
-        and parsed_text.scheme in {"http", "https"}
-        and parsed_text.netloc
-    )
+    looks_like_url = bool(parsed_text and parsed_text.scheme in {"http", "https"} and parsed_text.netloc)
     awaiting_source = context.user_data.pop("awaiting_source_url", False)
 
     if awaiting_source or looks_like_url:
@@ -370,18 +270,14 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parsed = urlparse(raw_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             context.user_data["awaiting_source_url"] = True
-            await update.message.reply_text(
-                "Это не похоже на полную ссылку. Вставь адрес, начинающийся с http:// или https://"
-            )
+            await update.message.reply_text("Это не похоже на полную ссылку. Вставь адрес, начинающийся с http:// или https://")
             return
 
         await update.message.reply_text("🔎 Проверяю источник…")
         try:
             detected_events = await parser_for_source(raw_url, "user").fetch(raw_url)
         except Exception as exc:
-            await update.message.reply_text(
-                f"Не получилось открыть эту страницу ({type(exc).__name__}). Проверь ссылку и попробуй ещё раз."
-            )
+            await update.message.reply_text(f"Не получилось открыть эту страницу ({type(exc).__name__}). Проверь ссылку и попробуй ещё раз.")
             return
 
         hostname = parsed.netloc.removeprefix("www.")
@@ -399,15 +295,9 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.commit()
 
         if detected_events:
-            await update.message.reply_text(
-                f"✅ Источник добавлен. Я нашёл {len(detected_events)} событий и буду его отслеживать.",
-                reply_markup=sources_menu(),
-            )
+            await update.message.reply_text(f"✅ Источник добавлен. Я нашёл {len(detected_events)} событий и буду его отслеживать.", reply_markup=sources_menu())
         else:
-            await update.message.reply_text(
-                "⚠️ Источник сохранён. Пока я не нашёл будущих событий на этой странице. Я всё равно сохраню сайт и буду проверять его дальше.",
-                reply_markup=sources_menu(),
-            )
+            await update.message.reply_text("⚠️ Источник сохранён. Пока я не нашёл будущих событий на этой странице. Я всё равно сохраню сайт и буду проверять его дальше.", reply_markup=sources_menu())
         return
 
     with SessionLocal() as db:
