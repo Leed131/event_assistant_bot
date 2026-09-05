@@ -6,6 +6,8 @@ services:
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: event-assistant-db
