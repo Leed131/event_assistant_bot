@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
-from app.sources import DACSource, GenericJsonLdSource
+from app.sources import parser_for_url
 
 
 def matches(user: User, event: Event) -> bool:
@@ -20,7 +20,7 @@ async def refresh_curated_sources(bot=None) -> int:
         sources = db.scalars(select(Source).where(Source.active.is_(True))).all()
         for source in sources:
             try:
-                parser = DACSource() if source.source_type == "curated" else GenericJsonLdSource()
+                parser = parser_for_url(source.url, source.source_type)
                 candidates = await parser.fetch(source.url)
             except Exception:
                 continue
