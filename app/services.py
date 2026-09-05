@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 
 from app.academy_search import search_royal_danish_academy_events
+from app.bloxhub_source import BloxhubSource
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
 from app.eventbrite_search import search_eventbrite_events
 from app.source_overrides import parser_for_source
@@ -53,6 +54,7 @@ def _hide_stale_discovered_items(db, source: Source, candidate_keys: set[str]) -
         or host.endswith("dac.dk")
         or host.endswith("kglakademi.dk")
         or host.endswith("royaldanishacademy.com")
+        or host.endswith("bloxhub.org")
     ):
         return
 
@@ -75,6 +77,9 @@ async def _candidates_for_source(source: Source):
 
     if "eventbrite." in host:
         return await search_eventbrite_events(source.city or "Copenhagen")
+
+    if host == "bloxhub.org" or host.endswith(".bloxhub.org"):
+        return await BloxhubSource().fetch(source.url)
 
     parser = parser_for_source(source.url, source.source_type)
     candidates = await parser.fetch(source.url)
