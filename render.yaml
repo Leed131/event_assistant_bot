@@ -1,0 +1,20 @@
+services:
+  - type: worker
+    name: event-assistant-bot
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: event-assistant-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: DEFAULT_TIMEZONE
+        value: Europe/Copenhagen
+
+databases:
+  - name: event-assistant-db
+    plan: basic-256mb
