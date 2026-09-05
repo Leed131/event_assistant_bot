@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from sqlalchemy import select
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.academy_search import search_royal_danish_academy_events
 from app.bloxhub_source import BloxhubSource
@@ -99,6 +100,16 @@ async def _candidates_for_source(source: Source):
     return candidates
 
 
+def _event_actions(user_event_id: int, registration_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Register", url=registration_url)],
+        [
+            InlineKeyboardButton("✅ I registered", callback_data=f"reg:{user_event_id}"),
+            InlineKeyboardButton("🙈 Not interested", callback_data=f"ignore:{user_event_id}"),
+        ],
+    ])
+
+
 async def refresh_curated_sources(bot=None) -> int:
     created = 0
     with SessionLocal() as db:
@@ -160,18 +171,19 @@ async def refresh_curated_sources(bot=None) -> int:
                     if existing:
                         continue
 
-                    db.add(
-                        UserEvent(
-                            user_id=user.id,
-                            event_id=event.id,
-                            status=UserEventStatus.discovered.value,
-                        )
+                    user_event = UserEvent(
+                        user_id=user.id,
+                        event_id=event.id,
+                        status=UserEventStatus.discovered.value,
                     )
+                    db.add(user_event)
+                    db.flush()
 
                     if bot and is_new:
                         await bot.send_message(
                             user.telegram_user_id,
-                            f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}\n\n🔗 {event.registration_url}",
+                            f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}",
+                            reply_markup=_event_actions(user_event.id, event.registration_url),
                         )
         db.commit()
     return created
