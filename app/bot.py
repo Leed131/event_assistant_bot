@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from urllib.parse import urlparse
 
 from sqlalchemy import select
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
@@ -37,6 +38,52 @@ def interests_menu() -> InlineKeyboardMarkup:
 
 def _interest_list(raw: str | None) -> list[str]:
     return [item.strip() for item in (raw or "").split(",") if item.strip()]
+
+
+def _ics_escape(value: str | None) -> str:
+    text = (value or "").replace("\\", "\\\\")
+    text = text.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n")
+    return text.replace(",", "\\,").replace(";", "\\;")
+
+
+def _ics_datetime(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _event_ics(event: Event) -> bytes:
+    location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
+    description_parts = []
+    if event.description:
+        description_parts.append(event.description[:1200])
+    if event.registration_url:
+        description_parts.append(f"Registration: {event.registration_url}")
+    description = "\n\n".join(description_parts)
+
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Event Assistant Bot//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+        f"UID:event-{event.id}@event-assistant-bot",
+        f"DTSTAMP:{_ics_datetime(datetime.now(timezone.utc))}",
+        f"DTSTART:{_ics_datetime(event.start_datetime)}",
+    ]
+    if event.end_datetime:
+        lines.append(f"DTEND:{_ics_datetime(event.end_datetime)}")
+    lines.extend([
+        f"SUMMARY:{_ics_escape(event.title)}",
+        f"LOCATION:{_ics_escape(location)}",
+        f"DESCRIPTION:{_ics_escape(description)}",
+        f"URL:{event.registration_url}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+        "",
+    ])
+    return "\r\n".join(lines).encode("utf-8")
 
 
 def get_or_create_user(tg_user) -> User:
@@ -188,7 +235,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             for item in items[:20]:
                 event = db.get(Event, item.event_id)
-                buttons = [[InlineKeyboardButton("🔗 Register", url=event.registration_url)]]
+                buttons = [
+                    [InlineKeyboardButton("🔗 Register", url=event.registration_url)],
+                    [InlineKeyboardButton("📅 Add to calendar", callback_data=f"cal:{item.id}")],
+                ]
                 if item.status != UserEventStatus.registered.value:
                     buttons.append([
                         InlineKeyboardButton("✅ I registered", callback_data=f"reg:{item.id}"),
@@ -203,6 +253,21 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}\n{item.note or ''}",
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
+        elif q.data.startswith("cal:"):
+            item = db.get(UserEvent, int(q.data.split(":")[1]))
+            if not item or item.user_id != user.id:
+                await q.message.reply_text("Event not found.")
+                return
+            event = db.get(Event, item.event_id)
+            if not event:
+                await q.message.reply_text("Event not found.")
+                return
+            filename = f"event-{event.id}.ics"
+            calendar_file = BytesIO(_event_ics(event))
+            await q.message.reply_document(
+                document=InputFile(calendar_file, filename=filename),
+                caption="📅 Open this file on iPhone and tap Add to save the event in Apple Calendar.",
+            )
         elif q.data.startswith("reg:"):
             item = db.get(UserEvent, int(q.data.split(":")[1]))
             item.status = UserEventStatus.registered.value
