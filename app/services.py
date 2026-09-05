@@ -5,18 +5,24 @@ from sqlalchemy import select
 
 from app.academy_search import search_royal_danish_academy_events
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
+from app.eventbrite_search import search_eventbrite_events
 from app.source_overrides import parser_for_source
 
 
 def matches(user: User, event: Event) -> bool:
-    """Return whether an event is in the user's city.
+    """Return whether an event is relevant to the user's location.
 
-    Interests are preferences, not a hard filter. The bot should not hide useful
-    events merely because a keyword did not match.
+    Interests are preferences, not a hard filter. Online events are allowed for
+    every user regardless of city. In-person events stay scoped to the user's city.
     """
+    event_city = (event.city or "").casefold().strip()
+    venue = (event.venue_name or "").casefold()
+    description = (event.description or "").casefold()
+    if event_city == "online" or "online" in venue or "online" in description:
+        return True
+
     if user.city and event.city:
         user_city = user.city.casefold().strip()
-        event_city = event.city.casefold().strip()
         if user_city not in event_city and event_city not in user_city:
             if event_city != "denmark":
                 return False
@@ -65,10 +71,14 @@ def _hide_stale_discovered_items(db, source: Source, candidate_keys: set[str]) -
 
 
 async def _candidates_for_source(source: Source):
+    host = urlparse(source.url).netloc.casefold().removeprefix("www.")
+
+    if "eventbrite." in host:
+        return await search_eventbrite_events(source.city or "Copenhagen")
+
     parser = parser_for_source(source.url, source.source_type)
     candidates = await parser.fetch(source.url)
 
-    host = urlparse(source.url).netloc.casefold().removeprefix("www.")
     if (
         host == "kglakademi.dk"
         or host.endswith(".kglakademi.dk")
