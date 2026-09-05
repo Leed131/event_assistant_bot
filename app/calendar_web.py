@@ -92,7 +92,8 @@ def calendar_page(event_id: int) -> str:
     when = event.start_datetime.strftime("%d %b %Y, %H:%M")
     location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
     google_url = _google_calendar_url(event)
-    apple_url = f"/calendar/{event.id}/download"
+    apple_url = f"/calendar/{event.id}/apple"
+    fallback_url = f"/calendar/{event.id}/download"
     register = event.registration_url or event.source_url or "#"
 
     return f"""
@@ -109,23 +110,39 @@ def calendar_page(event_id: int) -> str:
     .btn {{ display:block; text-decoration:none; text-align:center; padding:16px 18px; border-radius:14px; margin:12px 0; font-weight:700; background:#111; color:white; }}
     .btn.secondary {{ background:#e9e9ee; color:#111; }}
     .small {{ font-size:13px; color:#666; margin-top:18px; line-height:1.45; }}
+    .fallback {{ font-size:13px; text-align:center; margin-top:12px; }}
+    .fallback a {{ color:#555; }}
   </style>
 </head>
 <body>
   <div class="card">
     <h1>{escape(event.title)}</h1>
     <div class="meta">📅 {escape(when)}<br>📍 {escape(location)}</div>
-    <a class="btn" href="{apple_url}" download="event-{event.id}.ics"> Download for Apple Calendar</a>
+    <a class="btn" href="{apple_url}"> Open in Apple Calendar</a>
     <a class="btn secondary" href="{escape(google_url)}">Add to Google Calendar</a>
     <a class="btn secondary" href="{escape(register)}">Open registration page</a>
     <div class="small">
-      Apple: tap “Download for Apple Calendar”. This downloads one .ics event file — it is not a calendar subscription.
-      If iPhone shows a preview first, open the downloaded file from Files/Downloads and add the event from there.
+      On iPhone, use “Open in Apple Calendar”. The event is served inline as a calendar event, not as a subscription feed.
     </div>
+    <div class="fallback">If iOS still does not offer Calendar, <a href="{fallback_url}">download the .ics file instead</a>.</div>
   </div>
 </body>
 </html>
 """
+
+
+@app.get("/calendar/{event_id}/apple")
+def apple_calendar_inline(event_id: int) -> Response:
+    event = _get_event(event_id)
+    filename = f"event-{event.id}.ics"
+    return Response(
+        content=_event_ics(event),
+        media_type="text/calendar; charset=utf-8; method=PUBLISH",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store, max-age=0",
+        },
+    )
 
 
 @app.get("/calendar/{event_id}/download")
@@ -134,10 +151,9 @@ def apple_calendar_download(event_id: int) -> Response:
     filename = f"event-{event.id}.ics"
     return Response(
         content=_event_ics(event),
-        media_type="application/octet-stream",
+        media_type="text/calendar; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store, max-age=0",
-            "X-Content-Type-Options": "nosniff",
         },
     )
