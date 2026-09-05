@@ -7,11 +7,21 @@ from app.sources import parser_for_url
 
 
 def matches(user: User, event: Event) -> bool:
-    if user.city and event.city.casefold() != user.city.casefold():
-        return False
-    interests = [x.strip().casefold() for x in user.interests.split(",") if x.strip()]
-    haystack = f"{event.title} {event.description or ''}".casefold()
-    return not interests or any(word in haystack for word in interests)
+    """Return whether an event is in the user's city.
+
+    Interests are no longer a hard filter. They are kept as preferences for
+    future ranking/AI summaries, but the bot should not hide potentially useful
+    events just because a keyword did not match.
+    """
+    if user.city and event.city:
+        user_city = user.city.casefold().strip()
+        event_city = event.city.casefold().strip()
+        if user_city not in event_city and event_city not in user_city:
+            # Denmark-wide sources may still contain events relevant to Copenhagen;
+            # keep them visible rather than dropping them at ingestion time.
+            if event_city != "denmark":
+                return False
+    return True
 
 
 async def refresh_curated_sources(bot=None) -> int:
@@ -61,27 +71,34 @@ async def refresh_curated_sources(bot=None) -> int:
                     db.flush()
                     created += 1
 
-                if bot and is_new:
-                    for user in recipients:
-                        if matches(user, event):
-                            existing = db.scalar(
-                                select(UserEvent).where(
-                                    UserEvent.user_id == user.id,
-                                    UserEvent.event_id == event.id,
-                                )
-                            )
-                            if not existing:
-                                db.add(
-                                    UserEvent(
-                                        user_id=user.id,
-                                        event_id=event.id,
-                                        status=UserEventStatus.discovered.value,
-                                    )
-                                )
-                                await bot.send_message(
-                                    user.telegram_user_id,
-                                    f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}\n\n🔗 {event.registration_url}",
-                                )
+                for user in recipients:
+                    if not matches(user, event):
+                        continue
+                    existing = db.scalar(
+                        select(UserEvent).where(
+                            UserEvent.user_id == user.id,
+                            UserEvent.event_id == event.id,
+                        )
+                    )
+                    if existing:
+                        continue
+
+                    db.add(
+                        UserEvent(
+                            user_id=user.id,
+                            event_id=event.id,
+                            status=UserEventStatus.discovered.value,
+                        )
+                    )
+
+                    # Only push a Telegram notification immediately when the event
+                    # was first discovered. Previously stored events still become
+                    # visible in Discover without creating a notification flood.
+                    if bot and is_new:
+                        await bot.send_message(
+                            user.telegram_user_id,
+                            f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}\n\n🔗 {event.registration_url}",
+                        )
         db.commit()
     return created
 
