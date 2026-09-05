@@ -91,7 +91,11 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if q.data == "source:add":
         context.user_data["awaiting_source_url"] = True
-        await q.message.reply_text("Send me the full URL of an events or calendar page, for example:\nhttps://example.org/events")
+        await q.message.reply_text(
+            "Вставь ссылку на страницу мероприятий прямо в поле сообщения ниже и отправь её.\n\n"
+            "Например: https://example.org/events\n\n"
+            "Можно также просто прислать любую http/https ссылку боту без нажатия этой кнопки — я распознаю её как новый источник."
+        )
         return
     if q.data == "source:list":
         await show_sources(q.message, user)
@@ -184,21 +188,31 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_or_create_user(update.effective_user)
+    raw_text = (update.message.text or "").strip()
+    parsed_text = urlparse(raw_text) if raw_text else None
+    looks_like_url = bool(
+        parsed_text
+        and parsed_text.scheme in {"http", "https"}
+        and parsed_text.netloc
+    )
+    awaiting_source = context.user_data.pop("awaiting_source_url", False)
 
-    if context.user_data.pop("awaiting_source_url", False):
-        raw_url = (update.message.text or "").strip()
+    if awaiting_source or looks_like_url:
+        raw_url = raw_text
         parsed = urlparse(raw_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             context.user_data["awaiting_source_url"] = True
-            await update.message.reply_text("That does not look like a valid URL. Please send a full http:// or https:// address.")
+            await update.message.reply_text(
+                "Это не похоже на полную ссылку. Вставь адрес, начинающийся с http:// или https://"
+            )
             return
 
-        await update.message.reply_text("🔎 Checking the source…")
+        await update.message.reply_text("🔎 Проверяю источник…")
         try:
             detected_events = await GenericJsonLdSource().fetch(raw_url)
         except Exception as exc:
             await update.message.reply_text(
-                f"I could not open this page right now ({type(exc).__name__}). Nothing was saved. Check the URL and try again."
+                f"Не получилось открыть эту страницу ({type(exc).__name__}). Проверь ссылку и попробуй ещё раз."
             )
             return
 
@@ -218,12 +232,12 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if detected_events:
             await update.message.reply_text(
-                f"✅ Source added. I detected {len(detected_events)} structured event(s) on the page and will monitor it.",
+                f"✅ Источник добавлен. Я нашёл {len(detected_events)} структурированных событий на странице и буду её отслеживать.",
                 reply_markup=sources_menu(),
             )
         else:
             await update.message.reply_text(
-                "⚠️ Source saved, but I did not detect structured Event data on this page yet. I will keep it in your list; this site may need a dedicated parser later.",
+                "⚠️ Источник сохранён. На странице пока не найдено стандартных Event-данных. Я всё равно сохраню сайт; возможно, для него понадобится отдельный парсер.",
                 reply_markup=sources_menu(),
             )
         return
