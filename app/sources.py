@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
 
-USER_AGENT = "EventAssistantBot/0.3"
+USER_AGENT = "EventAssistantBot/0.4"
 
 MONTHS_DA = {
     "jan": 1, "januar": 1,
@@ -169,8 +169,114 @@ class GenericJsonLdSource(BaseEventSource):
 class DACSource(BaseEventSource):
     name = "Danish Architecture Center"
     calendar_url = "https://dac.dk/en/calendar"
+    focus_pages = (
+        "https://dac.dk/en/morgendac",
+        "https://dac.dk/en/afterdac",
+    )
+
+    @staticmethod
+    def _is_guided_tour(text: str, href: str) -> bool:
+        combined = f"{text} {href}".casefold()
+        return (
+            "guided-tour" in combined
+            or "guided tour" in combined
+            or re.search(r"\btours?\b", combined) is not None
+        )
+
+    async def _event_from_detail(
+        self,
+        client: httpx.AsyncClient,
+        detail_url: str,
+        now: datetime,
+    ) -> EventCandidate | None:
+        if self._is_guided_tour("", detail_url):
+            return None
+        try:
+            response = await client.get(detail_url)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        page = BeautifulSoup(response.text, "html.parser")
+        h1 = page.find("h1")
+        title = h1.get_text(" ", strip=True) if h1 else ""
+        if not title or self._is_guided_tour(title, detail_url):
+            return None
+
+        # Prefer Schema.org Event data on individual event pages when available.
+        for script in page.select('script[type="application/ld+json"]'):
+            try:
+                payload = json.loads(script.string or "{}")
+            except json.JSONDecodeError:
+                continue
+            nodes = payload if isinstance(payload, list) else [payload]
+            expanded: list[dict] = []
+            for node in nodes:
+                if isinstance(node, dict):
+                    expanded.append(node)
+                    expanded.extend(x for x in node.get("@graph", []) if isinstance(x, dict))
+            for node in expanded:
+                kinds = node.get("@type", [])
+                kinds = [kinds] if isinstance(kinds, str) else kinds
+                if "Event" not in kinds or not node.get("startDate"):
+                    continue
+                try:
+                    start = date_parser.isoparse(node["startDate"])
+                except (TypeError, ValueError):
+                    continue
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                if start < now:
+                    continue
+                location = node.get("location") if isinstance(node.get("location"), dict) else {}
+                address_obj = location.get("address") if isinstance(location, dict) else None
+                address_text = None
+                if isinstance(address_obj, dict):
+                    address_text = ", ".join(
+                        str(v)
+                        for v in [address_obj.get("streetAddress"), address_obj.get("postalCode"), address_obj.get("addressLocality")]
+                        if v
+                    )
+                return EventCandidate(
+                    title=node.get("name") or title,
+                    description=node.get("description"),
+                    start_datetime=start,
+                    end_datetime=date_parser.isoparse(node["endDate"]) if node.get("endDate") else None,
+                    city="Copenhagen",
+                    venue_name=location.get("name") if isinstance(location, dict) else "Danish Architecture Center (DAC)",
+                    address=address_text or "Bryghuspladsen 10, 1473 Copenhagen K",
+                    registration_url=detail_url,
+                    source_url=detail_url,
+                    source_name=self.name,
+                    external_id=detail_url,
+                )
+
+        text = (page.find("main") or page).get_text(" ", strip=True)
+        start = _parse_danish_date(text, now=now)
+        if not start:
+            return None
+        hour, minute = _time_from_text(text)
+        start = start.replace(hour=hour, minute=minute)
+        if start < now:
+            return None
+        return EventCandidate(
+            title=title,
+            description=text[:700],
+            start_datetime=start,
+            city="Copenhagen",
+            venue_name="Danish Architecture Center (DAC)",
+            address="Bryghuspladsen 10, 1473 Copenhagen K",
+            registration_url=detail_url,
+            source_url=detail_url,
+            source_name=self.name,
+            external_id=detail_url,
+        )
 
     async def fetch(self, url: str) -> list[EventCandidate]:
+        now = datetime.now(timezone.utc)
+        found: list[EventCandidate] = []
+        seen: set[str] = set()
+
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=30,
@@ -178,70 +284,108 @@ class DACSource(BaseEventSource):
         ) as client:
             response = await client.get(self.calendar_url)
             response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        now = datetime.now(timezone.utc)
-        found: list[EventCandidate] = []
-        seen: set[str] = set()
+            soup = BeautifulSoup(response.text, "html.parser")
 
-        # DAC calendar links contain /events/ and normally a ?date=YYYY-MM-DD query.
-        for anchor in soup.find_all("a", href=True):
-            href = urljoin(self.calendar_url, anchor["href"])
-            parsed = urlparse(href)
-            if not parsed.netloc.endswith("dac.dk") or "/events/" not in parsed.path:
-                continue
+            for anchor in soup.find_all("a", href=True):
+                href = urljoin(self.calendar_url, anchor["href"])
+                parsed = urlparse(href)
+                if not parsed.netloc.endswith("dac.dk") or "/events/" not in parsed.path:
+                    continue
 
-            text = anchor.get_text(" ", strip=True)
-            if not text:
-                continue
+                text = anchor.get_text(" ", strip=True)
+                if not text or self._is_guided_tour(text, href):
+                    continue
 
-            query = parse_qs(parsed.query)
-            date_value = (query.get("date") or [None])[0]
-            start_date: datetime | None = None
-            if date_value:
-                try:
-                    start_date = datetime.strptime(date_value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                except ValueError:
-                    start_date = None
-            if start_date is None:
-                start_date = _parse_danish_date(text, now=now)
-            if start_date is None:
-                continue
+                query = parse_qs(parsed.query)
+                date_value = (query.get("date") or [None])[0]
+                start_date: datetime | None = None
+                if date_value:
+                    try:
+                        start_date = datetime.strptime(date_value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        start_date = None
+                if start_date is None:
+                    start_date = _parse_danish_date(text, now=now)
+                if start_date is None:
+                    continue
 
-            hour, minute = _time_from_text(text)
-            start = start_date.replace(hour=hour, minute=minute)
-            if start < now:
-                continue
+                hour, minute = _time_from_text(text)
+                start = start_date.replace(hour=hour, minute=minute)
+                if start < now:
+                    continue
 
-            clean_url = href.split("#", 1)[0]
-            event_key = clean_url
-            if event_key in seen:
-                continue
-            seen.add(event_key)
+                clean_url = href.split("#", 1)[0]
+                if clean_url in seen:
+                    continue
+                seen.add(clean_url)
 
-            # Strip common category/time prefixes from card text for a cleaner title.
-            title = re.sub(r"^(Tours|Kids and family|Exhibition and Café|Exhibitions?)\s+", "", text, flags=re.IGNORECASE)
-            title = re.sub(r"^(?:At|Kl\.?)\s*\d{1,2}[:.]?\d{0,2}\s+", "", title, flags=re.IGNORECASE)
-            title = title[:300].strip()
-
-            found.append(
-                EventCandidate(
-                    title=title or "DAC event",
-                    description=text[:700],
-                    start_datetime=start,
-                    city="Copenhagen",
-                    venue_name="Danish Architecture Center (DAC)",
-                    address="Bryghuspladsen 10, 1473 Copenhagen K",
-                    registration_url=clean_url,
-                    source_url=clean_url,
-                    source_name=self.name,
-                    external_id=clean_url,
+                title = re.sub(
+                    r"^(AfterDAC|MorgenDAC|Knowledge Sharing and Networking|Event|Exhibitions?)\s+",
+                    "",
+                    text,
+                    flags=re.IGNORECASE,
                 )
-            )
+                title = re.sub(r"^(?:At|Kl\.?)\s*\d{1,2}[:.]?\d{0,2}\s+", "", title, flags=re.IGNORECASE)
+                title = title[:300].strip()
 
-        # Fallback to JSON-LD if DAC changes its calendar markup.
+                found.append(
+                    EventCandidate(
+                        title=title or "DAC event",
+                        description=text[:700],
+                        start_datetime=start,
+                        city="Copenhagen",
+                        venue_name="Danish Architecture Center (DAC)",
+                        address="Bryghuspladsen 10, 1473 Copenhagen K",
+                        registration_url=clean_url,
+                        source_url=clean_url,
+                        source_name=self.name,
+                        external_id=clean_url,
+                    )
+                )
+
+            # MorgenDAC and AfterDAC have dedicated pages. Read them too so talks
+            # are not missed when they are not yet prominent in the general calendar.
+            focus_links: list[str] = []
+            for focus_url in self.focus_pages:
+                try:
+                    focus_response = await client.get(focus_url)
+                    focus_response.raise_for_status()
+                except httpx.HTTPError:
+                    continue
+                focus_soup = BeautifulSoup(focus_response.text, "html.parser")
+                for anchor in focus_soup.find_all("a", href=True):
+                    detail_url = urljoin(focus_url, anchor["href"]).split("#", 1)[0]
+                    parsed = urlparse(detail_url)
+                    if not parsed.netloc.endswith("dac.dk") or "/events/" not in parsed.path:
+                        continue
+                    if self._is_guided_tour(anchor.get_text(" ", strip=True), detail_url):
+                        continue
+                    if detail_url not in focus_links and detail_url not in seen:
+                        focus_links.append(detail_url)
+
+            details = await asyncio.gather(
+                *(self._event_from_detail(client, link, now) for link in focus_links[:40])
+            )
+            for event in details:
+                if event is None or event.source_url in seen:
+                    continue
+                seen.add(event.source_url)
+                found.append(event)
+
         if not found:
-            return await GenericJsonLdSource().fetch(self.calendar_url)
-        found.sort(key=lambda item: item.start_datetime)
+            fallback = await GenericJsonLdSource().fetch(self.calendar_url)
+            found = [
+                event for event in fallback
+                if not self._is_guided_tour(event.title, event.source_url)
+            ]
+
+        # Put the knowledge-sharing formats first, then sort chronologically.
+        def priority(event: EventCandidate) -> tuple[int, datetime]:
+            text = f"{event.title} {event.description or ''}".casefold()
+            rank = 0 if ("morgendac" in text or "afterdac" in text or "international talk" in text) else 1
+            return rank, event.start_datetime
+
+        found.sort(key=priority)
         return found
 
 
