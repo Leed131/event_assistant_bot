@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import select
 
+from app.academy_search import search_royal_danish_academy_events
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
 from app.source_overrides import parser_for_source
 
@@ -66,14 +67,28 @@ def _hide_stale_discovered_items(db, source: Source, candidate_keys: set[str]) -
             db.delete(link)
 
 
+async def _candidates_for_source(source: Source):
+    parser = parser_for_source(source.url, source.source_type)
+    candidates = await parser.fetch(source.url)
+
+    host = urlparse(source.url).netloc.casefold().removeprefix("www.")
+    if host == "kglakademi.dk" or host.endswith(".kglakademi.dk"):
+        web_candidates = await search_royal_danish_academy_events()
+        by_key = {candidate.dedup_key: candidate for candidate in candidates}
+        for candidate in web_candidates:
+            by_key.setdefault(candidate.dedup_key, candidate)
+        candidates = list(by_key.values())
+
+    return candidates
+
+
 async def refresh_curated_sources(bot=None) -> int:
     created = 0
     with SessionLocal() as db:
         sources = db.scalars(select(Source).where(Source.active.is_(True))).all()
         for source in sources:
             try:
-                parser = parser_for_source(source.url, source.source_type)
-                candidates = await parser.fetch(source.url)
+                candidates = await _candidates_for_source(source)
             except Exception:
                 continue
 
