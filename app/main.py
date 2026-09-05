@@ -1,5 +1,5 @@
 import logging
-import sys
+import time
 
 from sqlalchemy import text
 from telegram.ext import Application
@@ -11,6 +11,7 @@ from app.services import refresh_curated_sources, send_due_reminders
 
 
 POLLING_LOCK_ID = 918273645
+LOCK_RETRY_SECONDS = 5
 
 
 async def scrape_job(context):
@@ -21,21 +22,28 @@ async def reminder_job(context):
     await send_due_reminders(context.bot)
 
 
-def acquire_polling_lock():
+def wait_for_polling_lock(logger):
     """Hold a PostgreSQL advisory lock for the lifetime of this process.
 
-    This prevents two Render instances from polling Telegram with the same bot
-    token during deploy overlap or accidental duplicate worker startup.
+    Render may briefly overlap the old and new worker during a deploy. Instead
+    of exiting and getting restarted in a loop, the new worker stays alive and
+    waits until the old worker releases the lock. This prevents Telegram
+    getUpdates 409 conflicts while still allowing a clean handover.
     """
     connection = engine.connect()
-    acquired = connection.execute(
-        text("SELECT pg_try_advisory_lock(:lock_id)"),
-        {"lock_id": POLLING_LOCK_ID},
-    ).scalar()
-    if not acquired:
-        connection.close()
-        return None
-    return connection
+    while True:
+        acquired = connection.execute(
+            text("SELECT pg_try_advisory_lock(:lock_id)"),
+            {"lock_id": POLLING_LOCK_ID},
+        ).scalar()
+        if acquired:
+            return connection
+        logger.info(
+            "Another Event Assistant instance still owns the Telegram polling lock; "
+            "waiting %s seconds for deploy handover.",
+            LOCK_RETRY_SECONDS,
+        )
+        time.sleep(LOCK_RETRY_SECONDS)
 
 
 def main() -> None:
@@ -43,14 +51,7 @@ def main() -> None:
     logger = logging.getLogger(__name__)
 
     init_db()
-    lock_connection = acquire_polling_lock()
-    if lock_connection is None:
-        logger.error(
-            "Another Event Assistant instance already owns the Telegram polling lock. "
-            "Exiting this duplicate process to avoid getUpdates 409 conflicts."
-        )
-        sys.exit(0)
-
+    lock_connection = wait_for_polling_lock(logger)
     logger.info("Telegram polling lock acquired; starting bot.")
 
     app = Application.builder().token(settings.telegram_bot_token).build()
