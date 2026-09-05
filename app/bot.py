@@ -6,7 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
-from app.sources import parser_for_url
+from app.source_overrides import parser_for_source
 
 
 def menu() -> InlineKeyboardMarkup:
@@ -312,7 +312,7 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("🔎 Проверяю источник…")
         try:
-            detected_events = await parser_for_url(raw_url, "user").fetch(raw_url)
+            detected_events = await parser_for_source(raw_url, "user").fetch(raw_url)
         except Exception as exc:
             await update.message.reply_text(
                 f"Не получилось открыть эту страницу ({type(exc).__name__}). Проверь ссылку и попробуй ещё раз."
