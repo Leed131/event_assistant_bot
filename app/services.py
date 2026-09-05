@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 
@@ -9,19 +10,60 @@ from app.sources import parser_for_url
 def matches(user: User, event: Event) -> bool:
     """Return whether an event is in the user's city.
 
-    Interests are no longer a hard filter. They are kept as preferences for
-    future ranking/AI summaries, but the bot should not hide potentially useful
-    events just because a keyword did not match.
+    Interests are preferences, not a hard filter. The bot should not hide useful
+    events merely because a keyword did not match.
     """
     if user.city and event.city:
         user_city = user.city.casefold().strip()
         event_city = event.city.casefold().strip()
         if user_city not in event_city and event_city not in user_city:
-            # Denmark-wide sources may still contain events relevant to Copenhagen;
-            # keep them visible rather than dropping them at ingestion time.
             if event_city != "denmark":
                 return False
     return True
+
+
+def _refresh_existing_event(event: Event, candidate) -> None:
+    """Update mutable event data when a source publishes corrections."""
+    event.external_id = candidate.external_id
+    event.title = candidate.title
+    event.description = candidate.description
+    event.start_datetime = candidate.start_datetime
+    event.end_datetime = candidate.end_datetime
+    event.venue_name = candidate.venue_name
+    event.address = candidate.address
+    event.city = candidate.city
+    event.registration_url = candidate.registration_url
+    event.source_url = candidate.source_url
+    event.image_url = candidate.image_url
+    event.price_text = candidate.price_text
+    event.is_free = candidate.is_free
+    event.last_seen_at = datetime.now(timezone.utc)
+
+
+def _hide_stale_discovered_items(db, source: Source, candidate_keys: set[str]) -> None:
+    """Remove stale auto-discovered cards for parsers we fully control.
+
+    Registered items are deliberately preserved. This is important when a parser
+    improves: old false positives (for example article publication dates or DAC
+    guided tours) should disappear from Discover without deleting a user's saved
+    registration.
+    """
+    host = urlparse(source.url).netloc.casefold().removeprefix("www.")
+    if not (host.endswith("dagensbyggeri.dk") or host.endswith("dac.dk")):
+        return
+
+    source_events = db.scalars(select(Event).where(Event.source_id == source.id)).all()
+    for event in source_events:
+        if event.dedup_key in candidate_keys:
+            continue
+        discovered_links = db.scalars(
+            select(UserEvent).where(
+                UserEvent.event_id == event.id,
+                UserEvent.status == UserEventStatus.discovered.value,
+            )
+        ).all()
+        for link in discovered_links:
+            db.delete(link)
 
 
 async def refresh_curated_sources(bot=None) -> int:
@@ -35,6 +77,9 @@ async def refresh_curated_sources(bot=None) -> int:
             except Exception:
                 continue
 
+            candidate_keys = {candidate.dedup_key for candidate in candidates}
+            _hide_stale_discovered_items(db, source, candidate_keys)
+
             if source.source_type == "curated":
                 recipients = db.scalars(select(User)).all()
             else:
@@ -44,28 +89,28 @@ async def refresh_curated_sources(bot=None) -> int:
                     .where(UserSource.source_id == source.id, UserSource.enabled.is_(True))
                 ).all()
 
-            for c in candidates:
-                event = db.scalar(select(Event).where(Event.dedup_key == c.dedup_key))
+            for candidate in candidates:
+                event = db.scalar(select(Event).where(Event.dedup_key == candidate.dedup_key))
                 is_new = event is None
                 if event:
-                    event.last_seen_at = datetime.now(timezone.utc)
+                    _refresh_existing_event(event, candidate)
                 else:
                     event = Event(
                         source_id=source.id,
-                        external_id=c.external_id,
-                        title=c.title,
-                        description=c.description,
-                        start_datetime=c.start_datetime,
-                        end_datetime=c.end_datetime,
-                        venue_name=c.venue_name,
-                        address=c.address,
-                        city=c.city,
-                        registration_url=c.registration_url,
-                        source_url=c.source_url,
-                        image_url=c.image_url,
-                        price_text=c.price_text,
-                        is_free=c.is_free,
-                        dedup_key=c.dedup_key,
+                        external_id=candidate.external_id,
+                        title=candidate.title,
+                        description=candidate.description,
+                        start_datetime=candidate.start_datetime,
+                        end_datetime=candidate.end_datetime,
+                        venue_name=candidate.venue_name,
+                        address=candidate.address,
+                        city=candidate.city,
+                        registration_url=candidate.registration_url,
+                        source_url=candidate.source_url,
+                        image_url=candidate.image_url,
+                        price_text=candidate.price_text,
+                        is_free=candidate.is_free,
+                        dedup_key=candidate.dedup_key,
                     )
                     db.add(event)
                     db.flush()
@@ -91,9 +136,6 @@ async def refresh_curated_sources(bot=None) -> int:
                         )
                     )
 
-                    # Only push a Telegram notification immediately when the event
-                    # was first discovered. Previously stored events still become
-                    # visible in Discover without creating a notification flood.
                     if bot and is_new:
                         await bot.send_message(
                             user.telegram_user_id,
