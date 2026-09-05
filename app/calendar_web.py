@@ -1,6 +1,7 @@
+import json
 from datetime import datetime, timedelta, timezone
 from html import escape
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
@@ -9,6 +10,7 @@ from app.db import Event, SessionLocal
 
 
 app = FastAPI(title="Event Assistant Calendar")
+SHORTCUT_NAME = "Event Assistant Calendar"
 
 
 def _ics_escape(value: str | None) -> str:
@@ -72,6 +74,33 @@ def _google_calendar_url(event: Event) -> str:
     return "https://calendar.google.com/calendar/render?" + urlencode(params)
 
 
+def _shortcut_url(event: Event) -> str:
+    """Build a Shortcuts deep link carrying all event fields as JSON text.
+
+    The user creates one reusable iPhone Shortcut named Event Assistant Calendar.
+    After that, this link launches the Shortcut directly from the browser and the
+    Shortcut creates a native Apple Calendar event.
+    """
+    end = event.end_datetime or (event.start_datetime + timedelta(hours=2))
+    location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
+    notes = event.description or ""
+    if event.registration_url:
+        notes = f"{notes}\n\nRegistration: {event.registration_url}".strip()
+    payload = {
+        "title": event.title,
+        "start": event.start_datetime.isoformat(),
+        "end": end.isoformat(),
+        "location": location,
+        "notes": notes,
+        "url": event.registration_url or event.source_url or "",
+    }
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return (
+        "shortcuts://run-shortcut?"
+        f"name={quote(SHORTCUT_NAME)}&input=text&text={quote(text, safe='')}"
+    )
+
+
 def _get_event(event_id: int) -> Event:
     with SessionLocal() as db:
         event = db.get(Event, event_id)
@@ -92,7 +121,8 @@ def calendar_page(event_id: int) -> str:
     when = event.start_datetime.strftime("%d %b %Y, %H:%M")
     location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
     google_url = _google_calendar_url(event)
-    apple_url = f"/calendar/{event.id}/apple"
+    shortcut_url = _shortcut_url(event)
+    apple_ics_url = f"/calendar/{event.id}/apple"
     fallback_url = f"/calendar/{event.id}/download"
     register = event.registration_url or event.source_url or "#"
 
@@ -104,13 +134,17 @@ def calendar_page(event_id: int) -> str:
   <title>Add event to calendar</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin:0; background:#f5f5f5; color:#111; }}
-    .card {{ max-width:560px; margin:40px auto; background:white; padding:28px; border-radius:20px; box-shadow:0 6px 30px rgba(0,0,0,.08); }}
+    .card {{ max-width:560px; margin:28px auto; background:white; padding:26px; border-radius:20px; box-shadow:0 6px 30px rgba(0,0,0,.08); }}
     h1 {{ font-size:26px; margin:0 0 14px; }}
+    h2 {{ font-size:18px; margin:28px 0 10px; }}
     .meta {{ line-height:1.5; color:#444; margin-bottom:24px; }}
     .btn {{ display:block; text-decoration:none; text-align:center; padding:16px 18px; border-radius:14px; margin:12px 0; font-weight:700; background:#111; color:white; }}
+    .btn.apple {{ background:#111; }}
     .btn.secondary {{ background:#e9e9ee; color:#111; }}
-    .small {{ font-size:13px; color:#666; margin-top:18px; line-height:1.45; }}
-    .fallback {{ font-size:13px; text-align:center; margin-top:12px; }}
+    .small {{ font-size:13px; color:#666; margin-top:14px; line-height:1.5; }}
+    .setup {{ background:#f3f3f6; border-radius:14px; padding:16px; font-size:14px; line-height:1.55; }}
+    .setup ol {{ padding-left:22px; margin:8px 0 0; }}
+    .fallback {{ font-size:13px; text-align:center; margin-top:14px; }}
     .fallback a {{ color:#555; }}
   </style>
 </head>
@@ -118,13 +152,34 @@ def calendar_page(event_id: int) -> str:
   <div class="card">
     <h1>{escape(event.title)}</h1>
     <div class="meta">📅 {escape(when)}<br>📍 {escape(location)}</div>
-    <a class="btn" href="{apple_url}"> Open in Apple Calendar</a>
+
+    <a class="btn apple" href="{escape(shortcut_url)}"> Add to Apple Calendar</a>
     <a class="btn secondary" href="{escape(google_url)}">Add to Google Calendar</a>
     <a class="btn secondary" href="{escape(register)}">Open registration page</a>
+
     <div class="small">
-      On iPhone, use “Open in Apple Calendar”. The event is served inline as a calendar event, not as a subscription feed.
+      Apple button uses one reusable iPhone Shortcut. After the Shortcut is set up once,
+      tapping this button can create the event directly in Apple Calendar without saving files.
     </div>
-    <div class="fallback">If iOS still does not offer Calendar, <a href="{fallback_url}">download the .ics file instead</a>.</div>
+
+    <h2>First-time Apple setup</h2>
+    <div class="setup">
+      Create one Shortcut on your iPhone named <b>{SHORTCUT_NAME}</b>:
+      <ol>
+        <li>Open the <b>Shortcuts</b> app and create a new shortcut.</li>
+        <li>Name it <b>{SHORTCUT_NAME}</b>.</li>
+        <li>Add <b>Get Dictionary from Input</b> (Shortcut Input).</li>
+        <li>Read the dictionary keys: <b>title</b>, <b>start</b>, <b>end</b>, <b>location</b>, <b>notes</b>.</li>
+        <li>Add <b>Add New Event</b> and map those values to Title, Start Date, End Date, Location and Notes.</li>
+        <li>Choose your Apple Calendar and enable <b>Show When Run</b> if you want confirmation before saving.</li>
+      </ol>
+      After that, return here and tap <b> Add to Apple Calendar</b> again.
+    </div>
+
+    <div class="fallback">
+      No Shortcut yet? <a href="{apple_ics_url}">open the .ics preview</a> or
+      <a href="{fallback_url}">download the .ics file</a>.
+    </div>
   </div>
 </body>
 </html>
