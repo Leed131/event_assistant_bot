@@ -7,6 +7,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 from app.config import settings
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
+from app.services import persist_detected_events_for_user
 from app.source_overrides import parser_for_source
 
 
@@ -157,20 +158,31 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with SessionLocal() as db:
         if q.data in {"week", "registered", "discover"}:
-            stmt = select(UserEvent).where(UserEvent.user_id == user.id)
+            now = datetime.now(timezone.utc)
+            stmt = (
+                select(UserEvent)
+                .join(Event)
+                .where(UserEvent.user_id == user.id)
+            )
             if q.data == "registered":
                 stmt = stmt.where(UserEvent.status == UserEventStatus.registered.value)
-            if q.data == "week":
-                now = datetime.now(timezone.utc)
-                stmt = stmt.join(Event).where(
+            elif q.data == "week":
+                stmt = stmt.where(
                     UserEvent.status == UserEventStatus.registered.value,
                     Event.start_datetime.between(now, now + timedelta(days=7)),
                 )
+            else:
+                stmt = stmt.where(
+                    UserEvent.status == UserEventStatus.discovered.value,
+                    Event.start_datetime >= now,
+                )
+
+            stmt = stmt.order_by(Event.start_datetime.asc()).limit(20)
             items = db.scalars(stmt).all()
             if not items:
                 await q.message.reply_text("No events here yet.")
                 return
-            for item in items[:20]:
+            for item in items:
                 event = db.get(Event, item.event_id)
                 buttons = [
                     [InlineKeyboardButton("🔗 Register", url=event.registration_url)],
@@ -292,10 +304,12 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.add(UserSource(user_id=user.id, source_id=source.id, enabled=True))
             else:
                 link.enabled = True
+            source_id = source.id
             db.commit()
 
         if detected_events:
-            await update.message.reply_text(f"✅ Источник добавлен. Я нашёл {len(detected_events)} событий и буду его отслеживать.", reply_markup=sources_menu())
+            persist_detected_events_for_user(user.id, source_id, detected_events)
+            await update.message.reply_text(f"✅ Источник добавлен. Я нашёл {len(detected_events)} событий и сохранил их сразу.", reply_markup=sources_menu())
         else:
             await update.message.reply_text("⚠️ Источник сохранён. Пока я не нашёл будущих событий на этой странице. Я всё равно сохраню сайт и буду проверять его дальше.", reply_markup=sources_menu())
         return
