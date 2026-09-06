@@ -14,6 +14,7 @@ from app.sources import (
     EventCandidate,
     parser_for_url,
 )
+from app.thoravej_search import search_thoravej29_events
 
 
 DATE_RANGE_RE = re.compile(
@@ -457,6 +458,15 @@ class RoyalDanishAcademyCalendarSource(BaseEventSource):
         return found
 
 
+class Thoravej29Source(BaseEventSource):
+    """Discover Thoravej 29 events that are rendered by client-side JavaScript."""
+
+    name = "Thoravej 29"
+
+    async def fetch(self, url: str) -> list[EventCandidate]:
+        return await search_thoravej29_events()
+
+
 def parser_for_source(url: str, source_type: str | None = None) -> BaseEventSource:
     host = urlparse(url).netloc.casefold().removeprefix("www.")
     if host.endswith("dagensbyggeri.dk"):
@@ -468,4 +478,6 @@ def parser_for_source(url: str, source_type: str | None = None) -> BaseEventSour
         or host.endswith(".royaldanishacademy.com")
     ):
         return RoyalDanishAcademyCalendarSource()
+    if host == "thoravej29.dk" or host.endswith(".thoravej29.dk"):
+        return Thoravej29Source()
     return parser_for_url(url, source_type)
