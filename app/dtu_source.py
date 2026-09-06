@@ -65,21 +65,25 @@ TITLE_YEAR_RE = re.compile(r"\b(20\d{2})\b")
 
 
 class DTUSource(BaseEventSource):
-    """Parse DTU's server-rendered event cards.
+    """Discover events across DTU's official public and internal event feeds.
 
-    DTU's /calendar page currently renders its event list client-side, so the
-    generic JSON-LD parser sees no events there. The main DTU pages do expose
-    upcoming event cards in the initial HTML, including links, dates and times.
-    This source reads those cards and therefore also works when a user adds the
-    plain https://www.dtu.dk/ homepage as a source.
+    DTU exposes upcoming events in several places. The top-level calendar can be
+    client-rendered, while the English front page/news page and DTU Inside expose
+    server-rendered event cards. We read all of these official feeds so adding a
+    plain dtu.dk URL still discovers substantially more than the homepage subset.
     """
 
     name = "Technical University of Denmark (DTU)"
-    fallback_pages = (
-        "https://www.dtu.dk/english",
+    public_pages = (
+        "https://www.dtu.dk/english/calendar",
         "https://www.dtu.dk/english/news",
-        "https://www.dtu.dk/",
+        "https://www.dtu.dk/english",
     )
+    inside_pages = (
+        "https://www.inside.dtu.dk/en/services/messages/alle-interne-arrangementer",
+        "https://www.inside.dtu.dk/en/",
+    )
+    fallback_pages = public_pages + inside_pages
 
     @staticmethod
     def _is_dtu_host(host: str) -> bool:
@@ -93,6 +97,20 @@ class DTUSource(BaseEventSource):
         return DTU_MONTHS.get(value.casefold().rstrip("."))
 
     @classmethod
+    def _is_event_detail_path(cls, host: str, path: str) -> bool:
+        host = host.casefold().removeprefix("www.")
+        path = path.casefold().rstrip("/")
+
+        if "/calendar/" in path and not path.endswith("/calendar"):
+            return True
+
+        inside_prefix = "/services/messages/alle-interne-arrangementer/"
+        if host == "inside.dtu.dk" and inside_prefix in path:
+            return True
+
+        return False
+
+    @classmethod
     def _event_url(cls, base_url: str, anchor: Tag) -> str | None:
         href = anchor.get("href")
         if not href:
@@ -101,10 +119,7 @@ class DTUSource(BaseEventSource):
         parsed = urlparse(detail_url)
         if not cls._is_dtu_host(parsed.netloc):
             return None
-        path = parsed.path.casefold().rstrip("/")
-        if "/calendar/" not in path:
-            return None
-        if path.endswith("/calendar"):
+        if not cls._is_event_detail_path(parsed.netloc, parsed.path):
             return None
         return detail_url
 
@@ -217,19 +232,29 @@ class DTUSource(BaseEventSource):
             if raw_image:
                 image_url = urljoin(base_url, raw_image)
 
+        combined = f"{title} {description or ''}".casefold()
+        is_online = "webinar" in combined or " online" in combined or "virtual" in combined
+
         return EventCandidate(
             title=title[:400],
             description=description[:900] if description else None,
             start_datetime=start,
             end_datetime=end,
-            city="Denmark",
-            venue_name="DTU",
+            city="Online" if is_online else "Denmark",
+            venue_name="DTU / online" if is_online else "DTU",
             registration_url=detail_url,
             source_url=detail_url,
             source_name=cls.name,
             image_url=image_url,
             external_id=detail_url,
         )
+
+    @staticmethod
+    def _dedup_key(candidate: EventCandidate) -> str:
+        """Deduplicate the same event when DTU publishes it in multiple feeds."""
+        title = re.sub(r"\s+", " ", candidate.title).strip().casefold()
+        start = candidate.start_datetime.astimezone(COPENHAGEN_TZ).strftime("%Y-%m-%dT%H:%M")
+        return f"{title}|{start}"
 
     async def fetch(self, url: str) -> list[EventCandidate]:
         now = datetime.now(COPENHAGEN_TZ)
@@ -238,9 +263,11 @@ class DTUSource(BaseEventSource):
         parsed = urlparse(url)
         if self._is_dtu_host(parsed.netloc):
             path = parsed.path.casefold().rstrip("/")
-            # A detail page is not a useful monitoring feed. Calendar pages are
-            # JS-only, so go straight to the server-rendered fallback pages.
-            if "/calendar/" not in path and not path.endswith("/calendar"):
+            # A detail page is not useful as a monitoring feed. A bare dtu.dk
+            # homepage is covered by the richer English + Inside feeds below.
+            is_detail = self._is_event_detail_path(parsed.netloc, path)
+            is_bare_home = parsed.netloc.casefold().removeprefix("www.") == "dtu.dk" and path == ""
+            if not is_detail and not is_bare_home:
                 pages.append(url)
 
         for page in self.fallback_pages:
@@ -265,7 +292,7 @@ class DTUSource(BaseEventSource):
                     candidate = self._candidate_from_anchor(str(response.url), anchor, now)
                     if candidate is None:
                         continue
-                    found.setdefault(candidate.external_id or candidate.source_url, candidate)
+                    found.setdefault(self._dedup_key(candidate), candidate)
 
         events = list(found.values())
         events.sort(key=lambda item: item.start_datetime)
