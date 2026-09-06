@@ -34,7 +34,9 @@ def test_parse_regular_dtu_event_card():
     assert event.title == "Cyber security Kick Off"
     assert event.start_datetime == datetime(2026, 10, 1, 12, 0, tzinfo=COPENHAGEN_TZ)
     assert event.end_datetime == datetime(2026, 10, 1, 14, 0, tzinfo=COPENHAGEN_TZ)
-    assert event.registration_url.endswith("/english/calendar/cyber-security-kick-off?id=abc")
+    assert event.registration_url.endswith(
+        "/english/calendar/cyber-security-kick-off?id=abc"
+    )
 
 
 def test_parse_ongoing_dtu_date_range():
@@ -52,3 +54,18 @@ def test_parse_ongoing_dtu_date_range():
     assert event.title == "Next Generation Digital Action 2026"
     assert event.start_datetime == datetime(2026, 5, 15, 23, 59, tzinfo=COPENHAGEN_TZ)
     assert event.end_datetime == datetime(2026, 11, 8, 11, 25, tzinfo=COPENHAGEN_TZ)
+
+
+def test_title_year_is_used_when_card_date_omits_year():
+    anchor = _anchor(
+        '<a href="/english/calendar/family-day-2027?id=family">'
+        "16 Sep DTU Family Day 2027 16 Sep 16:00 - 20:00 | Mark your calendar"
+        "</a>"
+    )
+    now = datetime(2026, 9, 6, 16, 0, tzinfo=COPENHAGEN_TZ)
+
+    event = DTUSource._candidate_from_anchor("https://www.dtu.dk/english", anchor, now)
+
+    assert event is not None
+    assert event.title == "DTU Family Day 2027"
+    assert event.start_datetime == datetime(2027, 9, 16, 16, 0, tzinfo=COPENHAGEN_TZ)
