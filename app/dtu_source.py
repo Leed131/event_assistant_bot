@@ -48,11 +48,11 @@ DTU_MONTHS = {
 
 MONTH_TOKEN = r"[A-Za-zÆØÅæøå]+"
 DTU_EVENT_TIME_RE = re.compile(
-    rf"(?P<start_day>\d{{1,2}})\.\s*(?P<start_month>{MONTH_TOKEN})"
+    rf"(?P<start_day>\d{{1,2}})\.?\s*(?P<start_month>{MONTH_TOKEN})"
     rf"(?:\s+(?P<start_year>20\d{{2}}))?\s+"
     rf"(?P<start_h>[01]?\d|2[0-3])[:.](?P<start_m>[0-5]\d)"
     rf"(?:\s*[-–]\s*"
-    rf"(?:(?P<end_day>\d{{1,2}})\.\s*(?P<end_month>{MONTH_TOKEN})"
+    rf"(?:(?P<end_day>\d{{1,2}})\.?\s*(?P<end_month>{MONTH_TOKEN})"
     rf"(?:\s+(?P<end_year>20\d{{2}}))?\s+)?"
     rf"(?P<end_h>[01]?\d|2[0-3])[:.](?P<end_m>[0-5]\d))?",
     re.IGNORECASE,
@@ -61,6 +61,7 @@ DTU_BADGE_RE = re.compile(
     rf"^\s*\d{{1,2}}\.?\s+{MONTH_TOKEN}(?:\s+20\d{{2}})?\s+",
     re.IGNORECASE,
 )
+TITLE_YEAR_RE = re.compile(r"\b(20\d{2})\b")
 
 
 class DTUSource(BaseEventSource):
@@ -122,7 +123,9 @@ class DTUSource(BaseEventSource):
             return None, None, match
 
         start_year_text = match.group("start_year")
-        start_year = int(start_year_text) if start_year_text else now.year
+        title_years = TITLE_YEAR_RE.findall(text[: match.start()])
+        title_year = int(title_years[-1]) if title_years else None
+        start_year = int(start_year_text) if start_year_text else (title_year or now.year)
         try:
             start = datetime(
                 start_year,
@@ -141,7 +144,8 @@ class DTUSource(BaseEventSource):
             end_month = cls._month_number(match.group("end_month")) or start_month
             end_year_text = match.group("end_year")
             end_year = int(end_year_text) if end_year_text else start_year
-            if not end_year_text and (end_month, end_day) < (start_month, int(match.group("start_day"))):
+            start_day = int(match.group("start_day"))
+            if not end_year_text and (end_month, end_day) < (start_month, start_day):
                 end_year += 1
             try:
                 end = datetime(
@@ -157,7 +161,7 @@ class DTUSource(BaseEventSource):
 
         # DTU omits the year on most cards. Near New Year, a January event must
         # be interpreted as next year, while a recently expired card should not.
-        if not start_year_text:
+        if not start_year_text and title_year is None:
             event_finished = end < now if end is not None else start < now
             if event_finished and (now - start).days > 45:
                 try:
