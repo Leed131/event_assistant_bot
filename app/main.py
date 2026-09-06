@@ -7,7 +7,7 @@ from telegram.ext import Application
 from app.bot import register_handlers
 from app.config import settings
 from app.db import engine, init_db
-from app.services import refresh_curated_sources, send_due_reminders
+from app.services import refresh_ai_discovery, refresh_curated_sources, send_due_reminders
 
 
 POLLING_LOCK_ID = 918273645
@@ -15,7 +15,15 @@ LOCK_RETRY_SECONDS = 5
 
 
 async def scrape_job(context):
+    # Cheap deterministic parsers can run frequently.
     await refresh_curated_sources(context.bot)
+
+
+async def ai_discovery_job(context):
+    # This job wakes up on the same lightweight cadence, but refresh_ai_discovery
+    # uses a persistent PostgreSQL timestamp and only spends OpenAI/web-search
+    # budget once per AI_DISCOVERY_INTERVAL_DAYS (default: 7).
+    await refresh_ai_discovery(context.bot)
 
 
 async def reminder_job(context):
@@ -63,6 +71,11 @@ def main() -> None:
         scrape_job,
         interval=settings.scrape_interval_hours * 3600,
         first=10,
+    )
+    app.job_queue.run_repeating(
+        ai_discovery_job,
+        interval=settings.scrape_interval_hours * 3600,
+        first=60,
     )
     app.job_queue.run_repeating(reminder_job, interval=3600, first=30)
 
