@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 from dateutil import parser as date_parser
 from openai import AsyncOpenAI
 
-from app.config import settings
 from app.sources import EventCandidate
 
 
@@ -110,6 +109,9 @@ async def search_thoravej29_events() -> list[EventCandidate]:
     HTML/JSON-LD parsers cannot see the event cards. Use web search as a
     discovery layer and require concrete public-source evidence for each item.
     """
+    # Import lazily so source parser unit tests do not require DATABASE_URL.
+    from app.config import settings
+
     if not settings.openai_api_key:
         return []
 
