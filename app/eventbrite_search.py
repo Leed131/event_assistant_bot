@@ -1,11 +1,10 @@
-import json
 import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from dateutil import parser as date_parser
-from openai import AsyncOpenAI
 
+from app.brave_discovery import discover_event_payload
 from app.config import settings
 from app.sources import EventCandidate
 
@@ -13,64 +12,38 @@ from app.sources import EventCandidate
 logger = logging.getLogger(__name__)
 
 
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
-
-
 async def search_eventbrite_events(city: str = "Copenhagen") -> list[EventCandidate]:
-    """Discover useful Eventbrite events without scraping Eventbrite directly.
+    """Discover useful Eventbrite events with Brave Search.
 
-    Eventbrite search pages are broad and noisy. We use web search as the
-    discovery layer, restrict results to direct Eventbrite event pages, and ask
-    for professional/cultural/educational events in Copenhagen plus worthwhile
-    online lectures that are open to participants in Denmark/Europe.
+    Brave finds candidate Eventbrite pages. We parse Schema.org Event data locally
+    where possible and use one compact OpenAI extraction only when structured data
+    is absent. OpenAI never receives the web_search tool here.
     """
-    if not settings.openai_api_key:
-        logger.warning("OPENAI_API_KEY is missing; Eventbrite discovery is disabled")
+    if not settings.brave_search_api_key:
+        logger.warning("BRAVE_SEARCH_API_KEY is missing; Eventbrite discovery is disabled")
         return []
 
     now = datetime.now(timezone.utc)
-    today = now.date().isoformat()
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-
+    year = now.year
     prompt = f"""
-Today is {today}. Find UPCOMING Eventbrite events relevant to an adult professional
-or creative person based in {city}, Denmark.
+Today is {now.date().isoformat()}. From the supplied Brave Search evidence, identify
+UPCOMING Eventbrite events relevant to an adult professional or creative person
+based in {city}, Denmark.
 
-Search only public Eventbrite event pages on eventbrite.com and Eventbrite country domains.
-Include two groups:
+Include:
 1. In-person or hybrid events in {city} / Greater Copenhagen.
 2. Online events that can reasonably be attended from Denmark/Europe.
 
-Prioritize useful events such as:
-- architecture, urbanism, built environment, construction, design
-- AI, technology, innovation, startups, entrepreneurship
-- sustainability, climate, circular economy, materials
-- lectures, talks, panels, conferences, seminars, workshops
-- exhibitions, openings, art/design/creative-industry events
-- leadership, professional networking, research, women in tech/AI/design
+Prioritize architecture, urbanism, built environment, construction, design, AI,
+technology, innovation, startups, sustainability, climate, circular economy,
+materials, talks, panels, conferences, seminars, workshops, exhibitions, creative
+industries, leadership, research and useful professional networking.
 
-Avoid obvious low-value noise unless it is clearly educational/professional:
-- nightlife, clubbing, raves, pub crawls
-- speed dating / singles events
-- generic parties and concerts
-- generic fitness/yoga/wellness classes
-- children's entertainment
+Exclude nightlife, raves, pub crawls, speed dating, generic parties/concerts,
+generic fitness/wellness classes and children's entertainment.
 
-Accuracy rules:
-- Include ONLY future events with a concrete published date.
-- Do not invent title, date, time, venue, price, format or URL.
-- Prefer the direct Eventbrite event URL, not a category/search/home page.
-- If exact time is missing, use 12:00 and set time_confirmed=false.
-- Return at most 40 events.
-
-Return ONLY valid JSON in this exact shape:
+Include only future events with a concrete published date. Do not invent title,
+date, time, venue, price, format or URL. Return ONLY valid JSON:
 {{
   "events": [
     {{
@@ -90,17 +63,17 @@ Return ONLY valid JSON in this exact shape:
 }}
 """
 
-    try:
-        response = await client.responses.create(
-            model="gpt-5.6-luna",
-            tools=[{"type": "web_search"}],
-            input=prompt,
-            max_output_tokens=7000,
-        )
-        payload = json.loads(_strip_code_fence(response.output_text))
-    except Exception:
-        logger.exception("Eventbrite web discovery failed")
-        return []
+    payload = await discover_event_payload(
+        queries=[
+            f'site:eventbrite.com {city} ({year} OR {year + 1}) (architecture OR design OR urbanism OR sustainability)',
+            f'site:eventbrite.com {city} ({year} OR {year + 1}) (AI OR technology OR innovation OR startup OR conference)',
+            f'site:eventbrite.com online ({year} OR {year + 1}) (architecture OR design OR AI OR sustainability) Europe',
+        ],
+        extraction_prompt=prompt,
+        max_results=15,
+        max_pages=10,
+        max_output_tokens=4000,
+    )
 
     found: list[EventCandidate] = []
     seen: set[str] = set()
@@ -162,7 +135,7 @@ Return ONLY valid JSON in this exact shape:
                 address=str(item.get("address") or "").strip() or None,
                 registration_url=registration_url,
                 source_url=source_url,
-                source_name="Eventbrite Discovery",
+                source_name="Eventbrite · Brave discovery",
                 is_free=item.get("is_free") if isinstance(item.get("is_free"), bool) else None,
                 external_id=dedup,
             )
