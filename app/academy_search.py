@@ -1,11 +1,10 @@
-import json
 import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from dateutil import parser as date_parser
-from openai import AsyncOpenAI
 
+from app.brave_discovery import discover_event_payload
 from app.config import settings
 from app.sources import EventCandidate
 
@@ -13,68 +12,41 @@ from app.sources import EventCandidate
 logger = logging.getLogger(__name__)
 
 
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines:
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
-
-
 async def search_royal_danish_academy_events() -> list[EventCandidate]:
-    """Use OpenAI web search as a discovery layer for Academy public events.
+    """Use Brave Search as the discovery layer for Academy public events.
 
-    The Academy often announces public lectures and exhibitions on LinkedIn,
-    partner sites or registration platforms instead of a single machine-readable
-    calendar. This search layer complements the deterministic parsers.
+    Brave finds candidate pages. Structured event data is parsed locally when
+    available; OpenAI is used only as a compact fallback to structure the small
+    evidence set and never receives the web_search tool.
     """
-    if not settings.openai_api_key:
+    if not settings.brave_search_api_key:
+        logger.warning("BRAVE_SEARCH_API_KEY is missing; Academy web discovery is disabled")
         return []
 
     now = datetime.now(timezone.utc)
     today = now.date().isoformat()
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    year = now.year
 
     prompt = f"""
-Today is {today}. Find UPCOMING public events in Copenhagen connected to
-The Royal Danish Academy — Architecture, Design, Conservation / Det Kongelige Akademi
-(kglakademi.dk, Royal Danish Academy), taking place after today.
+Today is {today}. From the supplied Brave Search evidence, identify UPCOMING public
+events in Copenhagen connected to The Royal Danish Academy — Architecture, Design,
+Conservation / Det Kongelige Akademi.
 
-Search broadly on the public web, including:
-- official Royal Danish Academy pages and research portal
-- official Royal Danish Academy LinkedIn pages and institute/showcase pages
-- public registration pages
-- partner/organizer pages that explicitly say the event takes place at the Royal Danish Academy
-- public exhibition announcements
-
-Include these types when open to the public:
-- International Lecture Series, public lectures, talks, debates
-- exhibitions, exhibition openings, graduation exhibitions
+Include when publicly accessible:
+- International Lecture Series, public lectures, talks and debates
+- exhibitions and exhibition openings
 - public symposia, conferences, seminars and architecture/design events
 
-Exclude:
-- ordinary courses/classes restricted to enrolled students or PhD students
-- internal meetings and exams
-- events that already happened
-- events outside Copenhagen unless the source explicitly says they take place at the Royal Danish Academy in Copenhagen
-
-Critical accuracy rules:
-- Do not invent an event, date, time, price, address or URL.
-- Include an event only if a public web source explicitly confirms a concrete date.
-- Prefer the direct event/registration/announcement URL, not a generic home page.
-- If a time is not published, use 12:00 but set time_confirmed=false.
-- Return no more than 20 events.
+Exclude ordinary student-only courses, internal meetings, exams, past events and
+items outside Copenhagen unless the evidence explicitly says the event is at the
+Royal Danish Academy in Copenhagen.
 
 Return ONLY valid JSON in this exact shape:
 {{
   "events": [
     {{
       "title": "string",
-      "start_datetime": "ISO-8601 datetime with timezone, preferably Europe/Copenhagen offset",
+      "start_datetime": "ISO-8601 datetime with timezone",
       "end_datetime": null,
       "venue_name": "string or null",
       "address": "string or null",
@@ -88,17 +60,17 @@ Return ONLY valid JSON in this exact shape:
 }}
 """
 
-    try:
-        response = await client.responses.create(
-            model="gpt-5.6-luna",
-            tools=[{"type": "web_search"}],
-            input=prompt,
-            max_output_tokens=5000,
-        )
-        payload = json.loads(_strip_code_fence(response.output_text))
-    except Exception:
-        logger.exception("Royal Danish Academy web search failed")
-        return []
+    payload = await discover_event_payload(
+        queries=[
+            f'site:kglakademi.dk ({year} OR {year + 1}) (lecture OR event OR exhibition OR symposium)',
+            f'site:royaldanishacademy.com ({year} OR {year + 1}) (lecture OR event OR exhibition OR symposium)',
+            f'"Royal Danish Academy" Copenhagen ({year} OR {year + 1}) (lecture OR exhibition OR symposium)',
+        ],
+        extraction_prompt=prompt,
+        max_results=12,
+        max_pages=8,
+        max_output_tokens=3500,
+    )
 
     found: list[EventCandidate] = []
     seen: set[str] = set()
@@ -146,7 +118,7 @@ Return ONLY valid JSON in this exact shape:
                 address=str(item.get("address") or "").strip() or None,
                 registration_url=registration_url,
                 source_url=source_url,
-                source_name="The Royal Danish Academy · web discovery",
+                source_name="The Royal Danish Academy · Brave discovery",
                 is_free=item.get("is_free") if isinstance(item.get("is_free"), bool) else None,
                 external_id=source_url,
             )
