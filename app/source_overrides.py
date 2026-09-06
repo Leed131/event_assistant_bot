@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup, Tag
 
 from app.bloxhub_source import BloxhubSource
 from app.cfu_source import CFUSource
+from app.dtu_source import DTUSource
 from app.sources import (
     DATE_RE,
     MONTHS_DA,
@@ -477,6 +478,8 @@ def parser_for_source(url: str, source_type: str | None = None) -> BaseEventSour
         return BloxhubSource()
     if host == "cfu.kp.dk" or host.endswith(".cfu.kp.dk"):
         return CFUSource()
+    if host == "dtu.dk" or host.endswith(".dtu.dk"):
+        return DTUSource()
     if (
         host == "kglakademi.dk"
         or host.endswith(".kglakademi.dk")
