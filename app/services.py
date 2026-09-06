@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -10,6 +11,9 @@ from app.dac_search import search_dac_talks
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
 from app.eventbrite_search import search_eventbrite_events
 from app.source_overrides import parser_for_source
+
+
+logger = logging.getLogger(__name__)
 
 
 def matches(user: User, event: Event) -> bool:
@@ -47,6 +51,71 @@ def _refresh_existing_event(event: Event, candidate) -> None:
     event.price_text = candidate.price_text
     event.is_free = candidate.is_free
     event.last_seen_at = datetime.now(timezone.utc)
+
+
+def _new_event(source: Source, candidate) -> Event:
+    return Event(
+        source_id=source.id,
+        external_id=candidate.external_id,
+        title=candidate.title,
+        description=candidate.description,
+        start_datetime=candidate.start_datetime,
+        end_datetime=candidate.end_datetime,
+        venue_name=candidate.venue_name,
+        address=candidate.address,
+        city=candidate.city,
+        registration_url=candidate.registration_url,
+        source_url=candidate.source_url,
+        image_url=candidate.image_url,
+        price_text=candidate.price_text,
+        is_free=candidate.is_free,
+        dedup_key=candidate.dedup_key,
+    )
+
+
+def persist_detected_events_for_user(user_id: int, source_id: int, candidates) -> int:
+    """Persist events already detected while a user adds a source.
+
+    This avoids waiting for the periodic source refresh after the bot has already
+    fetched and parsed the page successfully.
+    """
+    created = 0
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        source = db.get(Source, source_id)
+        if not user or not source:
+            return 0
+
+        for candidate in candidates:
+            event = db.scalar(select(Event).where(Event.dedup_key == candidate.dedup_key))
+            if event:
+                _refresh_existing_event(event, candidate)
+            else:
+                event = _new_event(source, candidate)
+                db.add(event)
+                db.flush()
+                created += 1
+
+            if not matches(user, event):
+                continue
+
+            existing = db.scalar(
+                select(UserEvent).where(
+                    UserEvent.user_id == user.id,
+                    UserEvent.event_id == event.id,
+                )
+            )
+            if not existing:
+                db.add(
+                    UserEvent(
+                        user_id=user.id,
+                        event_id=event.id,
+                        status=UserEventStatus.discovered.value,
+                    )
+                )
+
+        db.commit()
+    return created
 
 
 def _hide_stale_discovered_items(db, source: Source, candidate_keys: set[str]) -> None:
@@ -126,6 +195,7 @@ async def refresh_curated_sources(bot=None) -> int:
             try:
                 candidates = await _candidates_for_source(source)
             except Exception:
+                logger.exception("Failed to refresh source %s (%s)", source.name, source.url)
                 continue
 
             candidate_keys = {candidate.dedup_key for candidate in candidates}
@@ -146,23 +216,7 @@ async def refresh_curated_sources(bot=None) -> int:
                 if event:
                     _refresh_existing_event(event, candidate)
                 else:
-                    event = Event(
-                        source_id=source.id,
-                        external_id=candidate.external_id,
-                        title=candidate.title,
-                        description=candidate.description,
-                        start_datetime=candidate.start_datetime,
-                        end_datetime=candidate.end_datetime,
-                        venue_name=candidate.venue_name,
-                        address=candidate.address,
-                        city=candidate.city,
-                        registration_url=candidate.registration_url,
-                        source_url=candidate.source_url,
-                        image_url=candidate.image_url,
-                        price_text=candidate.price_text,
-                        is_free=candidate.is_free,
-                        dedup_key=candidate.dedup_key,
-                    )
+                    event = _new_event(source, candidate)
                     db.add(event)
                     db.flush()
                     created += 1
