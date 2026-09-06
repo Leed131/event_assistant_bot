@@ -7,13 +7,16 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.academy_search import search_royal_danish_academy_events
 from app.bloxhub_source import BloxhubSource
+from app.config import settings
 from app.dac_search import search_dac_talks
-from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
+from app.db import Event, ServiceRunState, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
 from app.eventbrite_search import search_eventbrite_events
 from app.source_overrides import parser_for_source
+from app.thoravej_search import search_thoravej29_events
 
 
 logger = logging.getLogger(__name__)
+AI_DISCOVERY_STATE_KEY = "openai_web_discovery"
 
 
 def matches(user: User, event: Event) -> bool:
@@ -143,38 +146,114 @@ def _hide_stale_discovered_items(db, source: Source, candidate_keys: set[str]) -
             db.delete(link)
 
 
-async def _candidates_for_source(source: Source):
-    host = urlparse(source.url).netloc.casefold().removeprefix("www.")
+def _host(source: Source) -> str:
+    return urlparse(source.url).netloc.casefold().removeprefix("www.")
 
+
+def _ai_discovery_family(source: Source) -> str | None:
+    host = _host(source)
     if "eventbrite." in host:
-        return await search_eventbrite_events(source.city or "Copenhagen")
-
-    if host == "bloxhub.org" or host.endswith(".bloxhub.org"):
-        return await BloxhubSource().fetch(source.url)
-
-    parser = parser_for_source(source.url, source.source_type)
-    candidates = await parser.fetch(source.url)
-
+        return "eventbrite"
     if host == "dac.dk" or host.endswith(".dac.dk"):
-        web_candidates = await search_dac_talks()
-        by_key = {candidate.dedup_key: candidate for candidate in candidates}
-        for candidate in web_candidates:
-            by_key.setdefault(candidate.dedup_key, candidate)
-        candidates = list(by_key.values())
-
+        return "dac"
     if (
         host == "kglakademi.dk"
         or host.endswith(".kglakademi.dk")
         or host == "royaldanishacademy.com"
         or host.endswith(".royaldanishacademy.com")
     ):
-        web_candidates = await search_royal_danish_academy_events()
-        by_key = {candidate.dedup_key: candidate for candidate in candidates}
-        for candidate in web_candidates:
-            by_key.setdefault(candidate.dedup_key, candidate)
-        candidates = list(by_key.values())
+        return "academy"
+    if host == "thoravej29.dk" or host.endswith(".thoravej29.dk"):
+        return "thoravej29"
+    return None
 
-    return candidates
+
+async def _routine_candidates_for_source(source: Source):
+    """Cheap/deterministic discovery used by the frequent scrape job.
+
+    Sources that currently depend entirely on OpenAI web search (Eventbrite and
+    Thoravej 29) intentionally return no candidates here. Their discovery is run
+    by the separate weekly AI job.
+    """
+    host = _host(source)
+
+    if "eventbrite." in host:
+        return []
+    if host == "thoravej29.dk" or host.endswith(".thoravej29.dk"):
+        return []
+    if host == "bloxhub.org" or host.endswith(".bloxhub.org"):
+        return await BloxhubSource().fetch(source.url)
+
+    parser = parser_for_source(source.url, source.source_type)
+    return await parser.fetch(source.url)
+
+
+async def _ai_candidates_for_source(source: Source):
+    family = _ai_discovery_family(source)
+    if family == "eventbrite":
+        return await search_eventbrite_events(source.city or "Copenhagen")
+    if family == "dac":
+        return await search_dac_talks()
+    if family == "academy":
+        return await search_royal_danish_academy_events()
+    if family == "thoravej29":
+        return await search_thoravej29_events()
+    return []
+
+
+def _recipients_for_source(db, source: Source):
+    if source.source_type == "curated":
+        return db.scalars(select(User)).all()
+    return db.scalars(
+        select(User)
+        .join(UserSource, UserSource.user_id == User.id)
+        .where(UserSource.source_id == source.id, UserSource.enabled.is_(True))
+    ).all()
+
+
+async def _persist_candidates(db, source: Source, candidates, bot=None) -> int:
+    created = 0
+    recipients = _recipients_for_source(db, source)
+
+    for candidate in candidates:
+        event = db.scalar(select(Event).where(Event.dedup_key == candidate.dedup_key))
+        is_new = event is None
+        if event:
+            _refresh_existing_event(event, candidate)
+        else:
+            event = _new_event(source, candidate)
+            db.add(event)
+            db.flush()
+            created += 1
+
+        for user in recipients:
+            if not matches(user, event):
+                continue
+            existing = db.scalar(
+                select(UserEvent).where(
+                    UserEvent.user_id == user.id,
+                    UserEvent.event_id == event.id,
+                )
+            )
+            if existing:
+                continue
+
+            user_event = UserEvent(
+                user_id=user.id,
+                event_id=event.id,
+                status=UserEventStatus.discovered.value,
+            )
+            db.add(user_event)
+            db.flush()
+
+            if bot and is_new:
+                await bot.send_message(
+                    user.telegram_user_id,
+                    f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}",
+                    reply_markup=_event_actions(user_event.id, event.registration_url),
+                )
+
+    return created
 
 
 def _event_actions(user_event_id: int, registration_url: str) -> InlineKeyboardMarkup:
@@ -187,67 +266,94 @@ def _event_actions(user_event_id: int, registration_url: str) -> InlineKeyboardM
     ])
 
 
+def _normalized_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def ai_discovery_due(last_run_at: datetime | None, *, now: datetime | None = None) -> bool:
+    if last_run_at is None:
+        return True
+    current = _normalized_utc(now or datetime.now(timezone.utc))
+    last = _normalized_utc(last_run_at)
+    return current - last >= timedelta(days=max(1, settings.ai_discovery_interval_days))
+
+
 async def refresh_curated_sources(bot=None) -> int:
+    """Frequent low-cost refresh using only deterministic parsers."""
     created = 0
     with SessionLocal() as db:
         sources = db.scalars(select(Source).where(Source.active.is_(True))).all()
         for source in sources:
             try:
-                candidates = await _candidates_for_source(source)
+                candidates = await _routine_candidates_for_source(source)
             except Exception:
                 logger.exception("Failed to refresh source %s (%s)", source.name, source.url)
                 continue
 
+            if not candidates:
+                continue
+
             candidate_keys = {candidate.dedup_key for candidate in candidates}
             _hide_stale_discovered_items(db, source, candidate_keys)
+            created += await _persist_candidates(db, source, candidates, bot=bot)
 
-            if source.source_type == "curated":
-                recipients = db.scalars(select(User)).all()
-            else:
-                recipients = db.scalars(
-                    select(User)
-                    .join(UserSource, UserSource.user_id == User.id)
-                    .where(UserSource.source_id == source.id, UserSource.enabled.is_(True))
-                ).all()
-
-            for candidate in candidates:
-                event = db.scalar(select(Event).where(Event.dedup_key == candidate.dedup_key))
-                is_new = event is None
-                if event:
-                    _refresh_existing_event(event, candidate)
-                else:
-                    event = _new_event(source, candidate)
-                    db.add(event)
-                    db.flush()
-                    created += 1
-
-                for user in recipients:
-                    if not matches(user, event):
-                        continue
-                    existing = db.scalar(
-                        select(UserEvent).where(
-                            UserEvent.user_id == user.id,
-                            UserEvent.event_id == event.id,
-                        )
-                    )
-                    if existing:
-                        continue
-
-                    user_event = UserEvent(
-                        user_id=user.id,
-                        event_id=event.id,
-                        status=UserEventStatus.discovered.value,
-                    )
-                    db.add(user_event)
-                    db.flush()
-
-                    if bot and is_new:
-                        await bot.send_message(
-                            user.telegram_user_id,
-                            f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}",
-                            reply_markup=_event_actions(user_event.id, event.registration_url),
-                        )
         db.commit()
+    return created
+
+
+async def refresh_ai_discovery(bot=None, *, force: bool = False) -> int:
+    """Run expensive OpenAI web discovery no more than once per configured interval.
+
+    The timestamp is persisted in PostgreSQL, so a Render deploy/restart does not
+    reset the weekly clock. Multiple source rows in the same discovery family are
+    collapsed to one OpenAI call per run.
+    """
+    if not settings.openai_api_key:
+        logger.info("OPENAI_API_KEY is missing; weekly AI discovery is disabled")
+        return 0
+
+    now = datetime.now(timezone.utc)
+    created = 0
+    with SessionLocal() as db:
+        state = db.get(ServiceRunState, AI_DISCOVERY_STATE_KEY)
+        if not force and state and not ai_discovery_due(state.last_run_at, now=now):
+            logger.info("AI web discovery is not due yet; last run: %s", state.last_run_at)
+            return 0
+
+        sources = db.scalars(select(Source).where(Source.active.is_(True))).all()
+        seen_families: set[str] = set()
+        attempted = 0
+
+        for source in sources:
+            family = _ai_discovery_family(source)
+            if not family or family in seen_families:
+                continue
+            seen_families.add(family)
+            attempted += 1
+
+            try:
+                candidates = await _ai_candidates_for_source(source)
+            except Exception:
+                logger.exception("AI discovery failed for %s (%s)", source.name, source.url)
+                continue
+
+            if candidates:
+                created += await _persist_candidates(db, source, candidates, bot=bot)
+
+        if state is None:
+            state = ServiceRunState(key=AI_DISCOVERY_STATE_KEY, last_run_at=now)
+            db.add(state)
+        else:
+            state.last_run_at = now
+        db.commit()
+
+    logger.info(
+        "Weekly AI discovery finished: %s source families checked, %s new events",
+        attempted,
+        created,
+    )
     return created
 
 
