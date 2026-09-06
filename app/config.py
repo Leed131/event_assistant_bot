@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     database_url: str
     openai_api_key: str | None = None
+    brave_search_api_key: str | None = None
+    openai_discovery_model: str = "gpt-5.6-luna"
     app_env: str = "development"
     log_level: str = "INFO"
     default_city: str = "Copenhagen"
