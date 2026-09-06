@@ -18,6 +18,8 @@ services:
         value: Europe/Copenhagen
       - key: PUBLIC_BASE_URL
         value: https://event-assistant-calendar.onrender.com
+      - key: AI_DISCOVERY_INTERVAL_DAYS
+        value: "7"
 
   - type: web
     name: event-assistant-calendar
