@@ -16,6 +16,8 @@ from app.thoravej_search import search_thoravej29_events
 
 
 logger = logging.getLogger(__name__)
+# Keep the legacy key so the existing weekly clock survives this migration from
+# OpenAI web_search to Brave Search.
 AI_DISCOVERY_STATE_KEY = "openai_web_discovery"
 
 
@@ -171,9 +173,9 @@ def _ai_discovery_family(source: Source) -> str | None:
 async def _routine_candidates_for_source(source: Source):
     """Cheap/deterministic discovery used by the frequent scrape job.
 
-    Sources that currently depend entirely on OpenAI web search (Eventbrite and
-    Thoravej 29) intentionally return no candidates here. Their discovery is run
-    by the separate weekly AI job.
+    Eventbrite and Thoravej 29 depend on the separate weekly Brave discovery.
+    DAC and the Academy still use their deterministic parsers frequently; Brave
+    only complements them during the weekly discovery pass.
     """
     host = _host(source)
 
@@ -304,14 +306,19 @@ async def refresh_curated_sources(bot=None) -> int:
 
 
 async def refresh_ai_discovery(bot=None, *, force: bool = False) -> int:
-    """Run expensive OpenAI web discovery no more than once per configured interval.
+    """Run Brave-first discovery no more than once per configured interval.
 
-    The timestamp is persisted in PostgreSQL, so a Render deploy/restart does not
-    reset the weekly clock. Multiple source rows in the same discovery family are
-    collapsed to one OpenAI call per run.
+    Brave performs the web search. Result pages are fetched directly and parsed
+    for Schema.org Event data locally. OpenAI is only a fallback to structure a
+    small evidence set when pages do not expose structured event data; it never
+    receives the web_search tool.
+
+    The timestamp is persisted in PostgreSQL so Render restarts do not reset the
+    weekly clock. Multiple source rows in one discovery family are collapsed to
+    one discovery run.
     """
-    if not settings.openai_api_key:
-        logger.info("OPENAI_API_KEY is missing; weekly AI discovery is disabled")
+    if not settings.brave_search_api_key:
+        logger.info("BRAVE_SEARCH_API_KEY is missing; weekly Brave discovery is disabled")
         return 0
 
     now = datetime.now(timezone.utc)
@@ -319,7 +326,7 @@ async def refresh_ai_discovery(bot=None, *, force: bool = False) -> int:
     with SessionLocal() as db:
         state = db.get(ServiceRunState, AI_DISCOVERY_STATE_KEY)
         if not force and state and not ai_discovery_due(state.last_run_at, now=now):
-            logger.info("AI web discovery is not due yet; last run: %s", state.last_run_at)
+            logger.info("Weekly web discovery is not due yet; last run: %s", state.last_run_at)
             return 0
 
         sources = db.scalars(select(Source).where(Source.active.is_(True))).all()
@@ -336,7 +343,7 @@ async def refresh_ai_discovery(bot=None, *, force: bool = False) -> int:
             try:
                 candidates = await _ai_candidates_for_source(source)
             except Exception:
-                logger.exception("AI discovery failed for %s (%s)", source.name, source.url)
+                logger.exception("Brave discovery failed for %s (%s)", source.name, source.url)
                 continue
 
             if candidates:
@@ -350,7 +357,7 @@ async def refresh_ai_discovery(bot=None, *, force: bool = False) -> int:
         db.commit()
 
     logger.info(
-        "Weekly AI discovery finished: %s source families checked, %s new events",
+        "Weekly Brave discovery finished: %s source families checked, %s new events",
         attempted,
         created,
     )
