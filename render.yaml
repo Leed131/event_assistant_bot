@@ -8,6 +8,8 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: BRAVE_SEARCH_API_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: event-assistant-db
@@ -20,6 +22,8 @@ services:
         value: https://event-assistant-calendar.onrender.com
       - key: AI_DISCOVERY_INTERVAL_DAYS
         value: "7"
+      - key: OPENAI_DISCOVERY_MODEL
+        value: gpt-5.6-luna
 
   - type: web
     name: event-assistant-calendar
