@@ -89,6 +89,14 @@ class UserEvent(Base):
     event: Mapped[Event] = relationship()
 
 
+class ServiceRunState(Base):
+    """Persistent timestamps for background jobs that must survive deploys."""
+
+    __tablename__ = "service_run_state"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 engine = create_engine(settings.sqlalchemy_database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
