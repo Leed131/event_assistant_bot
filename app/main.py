@@ -20,9 +20,10 @@ async def scrape_job(context):
 
 
 async def ai_discovery_job(context):
-    # This job wakes up on the same lightweight cadence, but refresh_ai_discovery
-    # uses a persistent PostgreSQL timestamp and only spends OpenAI/web-search
-    # budget once per AI_DISCOVERY_INTERVAL_DAYS (default: 7).
+    # The scheduler wakes up on the lightweight scrape cadence, but the service
+    # uses a persistent PostgreSQL timestamp and only runs Brave-based discovery
+    # once per AI_DISCOVERY_INTERVAL_DAYS (default: 7). OpenAI is only a parsing
+    # fallback for a small fetched evidence set; it does not browse the web.
     await refresh_ai_discovery(context.bot)
 
 
