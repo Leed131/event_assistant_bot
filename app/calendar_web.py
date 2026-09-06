@@ -1,7 +1,6 @@
-import json
 from datetime import datetime, timedelta, timezone
 from html import escape
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
@@ -10,7 +9,6 @@ from app.db import Event, SessionLocal
 
 
 app = FastAPI(title="Event Assistant Calendar")
-SHORTCUT_NAME = "Event Assistant Calendar"
 
 
 def _ics_escape(value: str | None) -> str:
@@ -74,27 +72,6 @@ def _google_calendar_url(event: Event) -> str:
     return "https://calendar.google.com/calendar/render?" + urlencode(params)
 
 
-def _shortcut_url(event: Event) -> str:
-    end = event.end_datetime or (event.start_datetime + timedelta(hours=2))
-    location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
-    notes = event.description or ""
-    if event.registration_url:
-        notes = f"{notes}\n\nRegistration: {event.registration_url}".strip()
-    payload = {
-        "title": event.title,
-        "start": event.start_datetime.isoformat(),
-        "end": end.isoformat(),
-        "location": location,
-        "notes": notes,
-        "url": event.registration_url or event.source_url or "",
-    }
-    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    return (
-        "shortcuts://run-shortcut?"
-        f"name={quote(SHORTCUT_NAME)}&input=text&text={quote(text, safe='')}"
-    )
-
-
 def _get_event(event_id: int) -> Event:
     with SessionLocal() as db:
         event = db.get(Event, event_id)
@@ -102,6 +79,19 @@ def _get_event(event_id: int) -> Event:
             raise HTTPException(status_code=404, detail="Event not found")
         db.expunge(event)
         return event
+
+
+def _apple_ics_response(event: Event, *, attachment: bool = False) -> Response:
+    filename = f"event-{event.id}.ics"
+    disposition = "attachment" if attachment else "inline"
+    return Response(
+        content=_event_ics(event),
+        media_type="text/calendar; charset=utf-8",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "Cache-Control": "no-store, max-age=0",
+        },
+    )
 
 
 @app.get("/health")
@@ -115,9 +105,7 @@ def calendar_page(event_id: int) -> str:
     when = event.start_datetime.strftime("%d %b %Y, %H:%M")
     location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
     google_url = _google_calendar_url(event)
-    shortcut_url = _shortcut_url(event)
-    create_shortcut_url = "shortcuts://create-shortcut"
-    apple_ics_url = f"/calendar/{event.id}/apple"
+    apple_ics_url = f"/calendar/{event.id}/event.ics"
     fallback_url = f"/calendar/{event.id}/download"
     register = event.registration_url or event.source_url or "#"
 
@@ -131,16 +119,11 @@ def calendar_page(event_id: int) -> str:
     body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin:0; background:#f5f5f5; color:#111; }}
     .card {{ max-width:560px; margin:28px auto; background:white; padding:26px; border-radius:20px; box-shadow:0 6px 30px rgba(0,0,0,.08); }}
     h1 {{ font-size:26px; margin:0 0 14px; }}
-    h2 {{ font-size:18px; margin:28px 0 10px; }}
     .meta {{ line-height:1.5; color:#444; margin-bottom:24px; }}
     .btn {{ display:block; text-decoration:none; text-align:center; padding:16px 18px; border-radius:14px; margin:12px 0; font-weight:700; background:#111; color:white; }}
     .btn.secondary {{ background:#e9e9ee; color:#111; }}
-    .btn.setupbtn {{ background:#dfe7ff; color:#111; }}
-    .small {{ font-size:13px; color:#666; margin-top:14px; line-height:1.5; }}
-    .setup {{ background:#f3f3f6; border-radius:14px; padding:16px; font-size:14px; line-height:1.55; }}
-    .setup ol {{ padding-left:22px; margin:8px 0 0; }}
-    .warning {{ background:#fff4cc; border-radius:12px; padding:12px 14px; margin:14px 0; font-size:14px; line-height:1.45; }}
-    .fallback {{ font-size:13px; text-align:center; margin-top:14px; }}
+    .hint {{ background:#eef5ff; border-radius:12px; padding:12px 14px; margin:14px 0; font-size:14px; line-height:1.45; }}
+    .fallback {{ font-size:13px; text-align:center; margin-top:14px; color:#666; }}
     .fallback a {{ color:#555; }}
   </style>
 </head>
@@ -149,37 +132,18 @@ def calendar_page(event_id: int) -> str:
     <h1>{escape(event.title)}</h1>
     <div class="meta">📅 {escape(when)}<br>📍 {escape(location)}</div>
 
-    <div class="warning">
-      <b>Apple Calendar:</b> first create the Shortcut once. If you tap the run button before the Shortcut exists,
-      iPhone opens Shortcuts search and shows an empty screen — exactly what you saw.
+    <div class="hint">
+      <b>iPhone / Apple Calendar:</b> tap the Apple button below. It opens a standard .ics calendar file,
+      so no Shortcuts setup is required. If Telegram only previews the file, use the Share button and open it in Calendar.
     </div>
 
-    <a class="btn setupbtn" href="{create_shortcut_url}">1. First time: create Apple Shortcut</a>
-    <a class="btn" href="{escape(shortcut_url)}">2. Shortcut ready: add to Apple Calendar</a>
+    <a class="btn" href="{apple_ics_url}">Add to Apple Calendar</a>
     <a class="btn secondary" href="{escape(google_url)}">Add to Google Calendar</a>
     <a class="btn secondary" href="{escape(register)}">Open registration page</a>
 
-    <h2>One-time Apple setup</h2>
-    <div class="setup">
-      <ol>
-        <li>Tap <b>1. First time: create Apple Shortcut</b>.</li>
-        <li>In Shortcuts, create a new shortcut and name it exactly <b>{SHORTCUT_NAME}</b>.</li>
-        <li>Add the action <b>Get Dictionary from Input</b> and use <b>Shortcut Input</b>.</li>
-        <li>Read these dictionary keys: <b>title</b>, <b>start</b>, <b>end</b>, <b>location</b>, <b>notes</b>.</li>
-        <li>Add the Calendar action <b>Add New Event</b>.</li>
-        <li>Map title → Title, start → Start Date, end → End Date, location → Location, notes → Notes.</li>
-        <li>Save the Shortcut. You only do this once.</li>
-      </ol>
-      Then return to Telegram and use <b>2. Shortcut ready: add to Apple Calendar</b> for any event.
-    </div>
-
-    <div class="small">
-      Apple only allows a web link to run a Shortcut that already exists in your collection. It cannot silently install the Shortcut for you.
-    </div>
-
     <div class="fallback">
-      Prefer not to set up Shortcuts? Use <b>Google Calendar</b>, or
-      <a href="{apple_ics_url}">open the .ics preview</a> / <a href="{fallback_url}">download .ics</a>.
+      If the Apple preview does not open automatically,
+      <a href="{fallback_url}">download the .ics file</a> and open it from Files/Downloads.
     </div>
   </div>
 </body>
@@ -187,29 +151,21 @@ def calendar_page(event_id: int) -> str:
 """
 
 
+@app.get("/calendar/{event_id}/event.ics")
+def apple_calendar_ics(event_id: int) -> Response:
+    """Serve a real .ics URL so iOS/macOS can hand it to Apple Calendar."""
+    event = _get_event(event_id)
+    return _apple_ics_response(event)
+
+
 @app.get("/calendar/{event_id}/apple")
 def apple_calendar_inline(event_id: int) -> Response:
+    """Legacy Apple URL kept for links that were already sent to users."""
     event = _get_event(event_id)
-    filename = f"event-{event.id}.ics"
-    return Response(
-        content=_event_ics(event),
-        media_type="text/calendar; charset=utf-8; method=PUBLISH",
-        headers={
-            "Content-Disposition": f'inline; filename="{filename}"',
-            "Cache-Control": "no-store, max-age=0",
-        },
-    )
+    return _apple_ics_response(event)
 
 
 @app.get("/calendar/{event_id}/download")
 def apple_calendar_download(event_id: int) -> Response:
     event = _get_event(event_id)
-    filename = f"event-{event.id}.ics"
-    return Response(
-        content=_event_ics(event),
-        media_type="text/calendar; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "no-store, max-age=0",
-        },
-    )
+    return _apple_ics_response(event, attachment=True)
