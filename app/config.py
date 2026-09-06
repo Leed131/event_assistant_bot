@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     default_city: str = "Copenhagen"
     default_timezone: str = "Europe/Copenhagen"
     scrape_interval_hours: int = 6
+    ai_discovery_interval_days: int = 7
     public_base_url: str = "https://event-assistant-calendar.onrender.com"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
