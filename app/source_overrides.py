@@ -24,10 +24,12 @@ DATE_RANGE_RE = re.compile(
 )
 ACADEMY_DATE_RE = re.compile(r"\b(?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>20\d{2})\b")
 ACADEMY_TIME_RANGE_RE = re.compile(
-    r"\b(?P<start_h>\d{1,2})[.:](?P<start_m>\d{2})\s*[-–]\s*"
-    r"(?P<end_h>\d{1,2})[.:](?P<end_m>\d{2})\b"
+    r"\b(?P<start_h>(?:[01]?\d|2[0-3]))[.:](?P<start_m>[0-5]\d)\s*[-–]\s*"
+    r"(?P<end_h>(?:[01]?\d|2[0-3]))[.:](?P<end_m>[0-5]\d)\b"
 )
-ACADEMY_TIME_RE = re.compile(r"\b(?P<h>\d{1,2})[.:](?P<m>\d{2})\b")
+ACADEMY_TIME_RE = re.compile(
+    r"\b(?P<h>(?:[01]?\d|2[0-3]))[.:](?P<m>[0-5]\d)\b"
+)
 ACADEMY_TYPE_WORDS = {
     "event",
     "arrangement",
@@ -338,7 +340,10 @@ class RoyalDanishAcademyCalendarSource(BaseEventSource):
         except ValueError:
             return None, None
 
-        time_range = ACADEMY_TIME_RANGE_RE.search(text)
+        # Remove dates before looking for clock values so 08.09.2026 cannot be
+        # misread as 08:09 (and 26.06.2026 cannot become the invalid time 26:06).
+        time_text = ACADEMY_DATE_RE.sub(" ", text)
+        time_range = ACADEMY_TIME_RANGE_RE.search(time_text)
         if time_range:
             start = start.replace(
                 hour=int(time_range.group("start_h")),
@@ -355,7 +360,7 @@ class RoyalDanishAcademyCalendarSource(BaseEventSource):
                     minute=int(time_range.group("end_m")),
                 )
         else:
-            single_time = ACADEMY_TIME_RE.search(text)
+            single_time = ACADEMY_TIME_RE.search(time_text)
             if single_time:
                 start = start.replace(
                     hour=int(single_time.group("h")),
