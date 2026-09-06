@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from app.db import Event, SessionLocal
@@ -94,18 +94,32 @@ def _apple_ics_response(event: Event, *, attachment: bool = False) -> Response:
     )
 
 
+def _safari_url(https_url: str) -> str:
+    """Best-effort iOS Safari handoff from an in-app browser.
+
+    x-safari-https is understood by current iOS Safari installations. If iOS or
+    the host app refuses the scheme, the page also exposes the normal HTTPS link
+    so users can copy/open it in Safari manually.
+    """
+    if https_url.startswith("https://"):
+        return "x-safari-https://" + https_url.removeprefix("https://")
+    return https_url
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.get("/calendar/{event_id}", response_class=HTMLResponse)
-def calendar_page(event_id: int) -> str:
+def calendar_page(event_id: int, request: Request) -> str:
     event = _get_event(event_id)
     when = event.start_datetime.strftime("%d %b %Y, %H:%M")
     location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
     google_url = _google_calendar_url(event)
-    apple_ics_url = f"/calendar/{event.id}/event.ics"
+    apple_path = f"/calendar/{event.id}/event.ics"
+    apple_https_url = str(request.base_url).rstrip("/") + apple_path
+    safari_url = _safari_url(apple_https_url)
     fallback_url = f"/calendar/{event.id}/download"
     register = event.registration_url or event.source_url or "#"
 
@@ -121,10 +135,12 @@ def calendar_page(event_id: int) -> str:
     h1 {{ font-size:26px; margin:0 0 14px; }}
     .meta {{ line-height:1.5; color:#444; margin-bottom:24px; }}
     .btn {{ display:block; text-decoration:none; text-align:center; padding:16px 18px; border-radius:14px; margin:12px 0; font-weight:700; background:#111; color:white; }}
+    .btn.apple {{ background:#0a84ff; }}
     .btn.secondary {{ background:#e9e9ee; color:#111; }}
     .hint {{ background:#eef5ff; border-radius:12px; padding:12px 14px; margin:14px 0; font-size:14px; line-height:1.45; }}
-    .fallback {{ font-size:13px; text-align:center; margin-top:14px; color:#666; }}
+    .fallback {{ font-size:13px; text-align:center; margin-top:14px; color:#666; line-height:1.5; }}
     .fallback a {{ color:#555; }}
+    .copybox {{ word-break:break-all; font-size:12px; padding:10px; background:#f3f3f3; border-radius:10px; margin-top:10px; user-select:all; }}
   </style>
 </head>
 <body>
@@ -133,17 +149,19 @@ def calendar_page(event_id: int) -> str:
     <div class="meta">📅 {escape(when)}<br>📍 {escape(location)}</div>
 
     <div class="hint">
-      <b>iPhone / Apple Calendar:</b> tap the Apple button below. It opens a standard .ics calendar file,
-      so no Shortcuts setup is required. If Telegram only previews the file, use the Share button and open it in Calendar.
+      <b>iPhone / Apple Calendar:</b> Telegram can preview .ics files without offering Calendar.
+      Use the Safari button first. In Safari, open the calendar file and iOS should offer the normal calendar import flow.
     </div>
 
-    <a class="btn" href="{apple_ics_url}">Add to Apple Calendar</a>
+    <a class="btn apple" href="{escape(safari_url)}">Open Apple Calendar link in Safari</a>
+    <a class="btn secondary" href="{escape(apple_https_url)}">Open .ics here instead</a>
     <a class="btn secondary" href="{escape(google_url)}">Add to Google Calendar</a>
     <a class="btn secondary" href="{escape(register)}">Open registration page</a>
 
     <div class="fallback">
-      If the Apple preview does not open automatically,
-      <a href="{fallback_url}">download the .ics file</a> and open it from Files/Downloads.
+      If the Safari button is blocked by Telegram, copy this address and paste it into Safari:
+      <div class="copybox">{escape(apple_https_url)}</div>
+      Or <a href="{fallback_url}">download the .ics file</a> as a fallback.
     </div>
   </div>
 </body>
