@@ -1,11 +1,10 @@
-import json
 import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from dateutil import parser as date_parser
-from openai import AsyncOpenAI
 
+from app.brave_discovery import discover_event_payload
 from app.config import settings
 from app.sources import EventCandidate
 
@@ -13,55 +12,29 @@ from app.sources import EventCandidate
 logger = logging.getLogger(__name__)
 
 
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
-
-
 async def search_dac_talks() -> list[EventCandidate]:
-    """Find upcoming DAC talks that can be missed by the static calendar parser.
-
-    DAC's focus pages (MorgenDAC and AfterDAC) can be rendered differently from
-    the general calendar. Web discovery complements the deterministic parser and
-    focuses on the architecture talks the user actually wants.
-    """
-    if not settings.openai_api_key:
+    """Find upcoming DAC talks using Brave Search plus local page parsing."""
+    if not settings.brave_search_api_key:
+        logger.warning("BRAVE_SEARCH_API_KEY is missing; DAC web discovery is disabled")
         return []
 
     now = datetime.now(timezone.utc)
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    year = now.year
     prompt = f"""
-Today is {now.date().isoformat()}.
-Find UPCOMING events at the Danish Architecture Center (DAC) in Copenhagen,
-using ONLY official dac.dk pages as evidence.
+Today is {now.date().isoformat()}. From the supplied Brave Search evidence, identify
+UPCOMING events at the Danish Architecture Center (DAC) in Copenhagen.
 
-Prioritize and include:
-- MorgenDAC
-- AfterDAC talks
+Prioritize:
+- MorgenDAC and AfterDAC
 - International Talk / International Talks
 - architecture and urbanism talks, lectures, debates and conversations
 - Film & Talk
 - professional seminars, symposiums or conferences at DAC
 
-Exclude:
-- guided tours / gallery tours
-- Kids and family activities
-- LEGO nights or build/play workshops
-- generic café/dinner admission offers
-- Free Fridays / youth social evenings
-- events that have already happened
+Exclude guided/gallery tours, kids and family activities, LEGO nights, generic
+cafe/dinner offers, Free Fridays and past events.
 
-Important:
-- Find the direct dac.dk event page whenever possible.
-- Include a result only when an official DAC page confirms a concrete future date.
-- Do not invent dates, times, prices, speakers or URLs.
-- Return at most 30 events.
-
+Use only official dac.dk evidence. Do not invent dates, times, speakers or URLs.
 Return ONLY valid JSON:
 {{
   "events": [
@@ -80,17 +53,17 @@ Return ONLY valid JSON:
 }}
 """
 
-    try:
-        response = await client.responses.create(
-            model="gpt-5.6-luna",
-            tools=[{"type": "web_search"}],
-            input=prompt,
-            max_output_tokens=6000,
-        )
-        payload = json.loads(_strip_code_fence(response.output_text))
-    except Exception:
-        logger.exception("DAC web discovery failed")
-        return []
+    payload = await discover_event_payload(
+        queries=[
+            f'site:dac.dk ({year} OR {year + 1}) (MorgenDAC OR AfterDAC OR "International Talk")',
+            f'site:dac.dk ({year} OR {year + 1}) (architecture OR urbanism) (talk OR lecture OR symposium OR seminar)',
+        ],
+        extraction_prompt=prompt,
+        allowed_hosts=("dac.dk",),
+        max_results=12,
+        max_pages=8,
+        max_output_tokens=3500,
+    )
 
     found: list[EventCandidate] = []
     seen: set[str] = set()
@@ -158,7 +131,7 @@ Return ONLY valid JSON:
                 address="Bryghuspladsen 10, 1473 Copenhagen K",
                 registration_url=registration_url,
                 source_url=source_url,
-                source_name="Danish Architecture Center · talks",
+                source_name="Danish Architecture Center · Brave discovery",
                 is_free=item.get("is_free") if isinstance(item.get("is_free"), bool) else None,
                 external_id=f"{source_url}|{start.date().isoformat()}",
             )
