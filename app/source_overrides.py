@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from app.bloxhub_source import BloxhubSource
 from app.sources import (
     DATE_RE,
     MONTHS_DA,
@@ -471,6 +472,8 @@ def parser_for_source(url: str, source_type: str | None = None) -> BaseEventSour
     host = urlparse(url).netloc.casefold().removeprefix("www.")
     if host.endswith("dagensbyggeri.dk"):
         return DagensByggeriAccurateSource()
+    if host == "bloxhub.org" or host.endswith(".bloxhub.org"):
+        return BloxhubSource()
     if (
         host == "kglakademi.dk"
         or host.endswith(".kglakademi.dk")
