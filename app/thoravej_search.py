@@ -1,30 +1,17 @@
-import json
 import logging
 from datetime import datetime
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
-from openai import AsyncOpenAI
 
+from app.brave_discovery import discover_event_payload
 from app.sources import EventCandidate
 
 
 logger = logging.getLogger(__name__)
 COPENHAGEN_TZ = ZoneInfo("Europe/Copenhagen")
 THORAVEJ_EVENTS_URL = "https://www.thoravej29.dk/da/events"
-
-
-def _strip_code_fence(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines:
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
 
 
 def _events_from_payload(
@@ -69,7 +56,6 @@ def _events_from_payload(
             except (TypeError, ValueError):
                 end = None
 
-        # Keep currently-running multi-day programmes, but drop completed items.
         if end is not None:
             if end < now:
                 continue
@@ -92,7 +78,7 @@ def _events_from_payload(
                 address="Thoravej 29, 2400 Copenhagen NV",
                 registration_url=registration_url,
                 source_url=source_url,
-                source_name="Thoravej 29 · web discovery",
+                source_name="Thoravej 29 · Brave discovery",
                 is_free=item.get("is_free") if isinstance(item.get("is_free"), bool) else None,
                 external_id=source_url,
             )
@@ -103,47 +89,27 @@ def _events_from_payload(
 
 
 async def search_thoravej29_events() -> list[EventCandidate]:
-    """Discover Thoravej 29 events when the calendar is rendered client-side.
-
-    The /events page initially returns only a loading placeholder, so ordinary
-    HTML/JSON-LD parsers cannot see the event cards. Use web search as a
-    discovery layer and require concrete public-source evidence for each item.
-    """
-    # Import lazily so source parser unit tests do not require DATABASE_URL.
+    """Discover Thoravej 29 events with Brave Search and local page fetching."""
     from app.config import settings
 
-    if not settings.openai_api_key:
+    if not settings.brave_search_api_key:
+        logger.warning("BRAVE_SEARCH_API_KEY is missing; Thoravej 29 discovery is disabled")
         return []
 
     now = datetime.now(COPENHAGEN_TZ)
-    today = now.date().isoformat()
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-
+    year = now.year
     prompt = f"""
-Today is {today}. Find all UPCOMING or CURRENTLY RUNNING public events shown by
-Thoravej 29 in Copenhagen. The official calendar is:
-{THORAVEJ_EVENTS_URL}
+Today is {now.date().isoformat()}. From the supplied Brave Search evidence, identify
+all UPCOMING or CURRENTLY RUNNING public events at Thoravej 29 in Copenhagen.
 
-The calendar is client-side rendered, so search broadly and verify events using:
-- official thoravej29.dk event/detail pages
-- official Thoravej 29 social posts
-- official member/organizer pages when they explicitly say the event is at Thoravej 29
-- registration pages linked to the event
+The official calendar is {THORAVEJ_EVENTS_URL}. Include multi-day programmes and
+recurring series that are still active. Evidence may come from official Thoravej 29
+pages, organizer pages or registration pages that explicitly confirm the event is
+at Thoravej 29.
 
-Important: include multi-day programmes and recurring series that are still active.
-The current calendar can contain items such as Forandringskrafts Spireforløb,
-Åben AkademiMorgen, and Bogklubben for Mulige Fremtider: Teknologi; use these
-names only as search hints and include them only when a public source confirms
-their date(s).
-
-Critical accuracy rules:
-- Do not invent a title, date, time, URL, organizer, price, or description.
-- Include an event only when a public source explicitly confirms a concrete date.
-- Prefer the direct thoravej29.dk event URL when one exists; otherwise use the
-  most direct organizer/registration page that proves the event is at Thoravej 29.
-- Preserve published start/end dates for multi-day programmes.
-- If a start time is not published, use 12:00 and set time_confirmed=false.
-- Return no more than 30 events.
+Do not invent title, date, time, URL, organizer, price or description. Include an
+event only when the supplied evidence explicitly confirms a concrete date. Prefer
+the direct Thoravej 29 event URL when available.
 
 Return ONLY valid JSON in this exact shape:
 {{
@@ -162,16 +128,14 @@ Return ONLY valid JSON in this exact shape:
 }}
 """
 
-    try:
-        response = await client.responses.create(
-            model="gpt-5.6-luna",
-            tools=[{"type": "web_search"}],
-            input=prompt,
-            max_output_tokens=6500,
-        )
-        payload = json.loads(_strip_code_fence(response.output_text))
-    except Exception:
-        logger.exception("Thoravej 29 web search failed")
-        return []
-
+    payload = await discover_event_payload(
+        queries=[
+            f'site:thoravej29.dk ({year} OR {year + 1}) (event OR arrangement OR talk OR workshop OR exhibition)',
+            f'"Thoravej 29" Copenhagen ({year} OR {year + 1}) (event OR talk OR workshop OR exhibition)',
+        ],
+        extraction_prompt=prompt,
+        max_results=12,
+        max_pages=8,
+        max_output_tokens=3500,
+    )
     return _events_from_payload(payload, now=now)
