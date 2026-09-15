@@ -1,3 +1,4 @@
+from app.event_display import format_event_when
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -199,7 +200,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("📝 Add note", callback_data=f"note:{item.id}"),
                     ])
                 await q.message.reply_text(
-                    f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}\n{item.note or ''}",
+                    f"🏛 {event.title}\n📅 {format_event_when(event)}\n📍 {event.venue_name or event.city}\n{item.note or ''}",
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
         elif q.data.startswith("reg:"):
@@ -349,3 +350,4 @@ def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, incoming))
+

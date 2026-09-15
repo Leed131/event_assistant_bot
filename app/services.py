@@ -1,3 +1,4 @@
+from app.event_display import format_event_when
 import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -251,7 +252,7 @@ async def _persist_candidates(db, source: Source, candidates, bot=None) -> int:
             if bot and is_new:
                 await bot.send_message(
                     user.telegram_user_id,
-                    f"🏛 {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}",
+                    f"🏛 {event.title}\n📅 {format_event_when(event)}\n📍 {event.venue_name or event.city}",
                     reply_markup=_event_actions(user_event.id, event.registration_url),
                 )
 
@@ -383,9 +384,10 @@ async def send_due_reminders(bot) -> int:
             if due <= now:
                 await bot.send_message(
                     user.telegram_user_id,
-                    f"🔔 Reminder: {event.title}\n📅 {event.start_datetime:%d %b %Y, %H:%M}\n📍 {event.venue_name or event.city}",
+                    f"🔔 Reminder: {event.title}\n📅 {format_event_when(event)}\n📍 {event.venue_name or event.city}",
                 )
                 item.reminder_sent_at = now
                 sent += 1
         db.commit()
     return sent
+
