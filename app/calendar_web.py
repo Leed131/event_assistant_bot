@@ -1,3 +1,4 @@
+from app.event_display import format_event_when
 from datetime import datetime, timedelta, timezone
 from html import escape
 from urllib.parse import urlencode
@@ -114,7 +115,7 @@ def health() -> dict[str, str]:
 @app.get("/calendar/{event_id}", response_class=HTMLResponse)
 def calendar_page(event_id: int, request: Request) -> str:
     event = _get_event(event_id)
-    when = event.start_datetime.strftime("%d %b %Y, %H:%M")
+    when = format_event_when(event)
     location = ", ".join(part for part in [event.venue_name, event.address, event.city] if part)
     google_url = _google_calendar_url(event)
     apple_path = f"/calendar/{event.id}/event.ics"
@@ -187,3 +188,4 @@ def apple_calendar_inline(event_id: int) -> Response:
 def apple_calendar_download(event_id: int) -> Response:
     event = _get_event(event_id)
     return _apple_ics_response(event, attachment=True)
+

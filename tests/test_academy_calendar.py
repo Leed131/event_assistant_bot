@@ -1,6 +1,39 @@
 import pytest
+from bs4 import BeautifulSoup
 
 from app.source_overrides import RoyalDanishAcademyCalendarSource
+
+
+@pytest.mark.parametrize("separator", ["-", "–", "—"])
+def test_exhibition_title_is_not_replaced_by_longer_date_range(separator):
+    # Reconstructed calendar card using the user's exhibition example.
+    soup = BeautifulSoup(
+        f'<a href="/da/kalender/mediering-komposition"><span>UDSTILLING</span>'
+        f'<span>01.09.2026 {separator} 29.10.2026</span>'
+        '<span>Mediering &amp; komposition</span></a>',
+        "html.parser",
+    )
+    assert RoyalDanishAcademyCalendarSource._extract_title(soup.a, soup.a) == (
+        "Mediering & komposition"
+    )
+
+
+def test_heading_wins_over_long_description():
+    soup = BeautifulSoup(
+        '<a href="/event"><h3>Mediering &amp; komposition</h3>'
+        '<p>A much longer description of the exhibition and all its projects</p>'
+        '<span>01.09.2026 - 29.10.2026</span></a>', "html.parser"
+    )
+    assert RoyalDanishAcademyCalendarSource._extract_title(soup.a, soup.a) == (
+        "Mediering & komposition"
+    )
+
+
+def test_dates_without_title_use_neutral_fallback():
+    soup = BeautifulSoup('<a>01.09.2026 - 29.10.2026</a>', "html.parser")
+    assert RoyalDanishAcademyCalendarSource._extract_title(soup.a, soup.a) == (
+        "Royal Danish Academy event"
+    )
 
 
 def test_academy_date_range_is_not_misread_as_clock_time():

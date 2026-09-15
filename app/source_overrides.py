@@ -276,24 +276,33 @@ class RoyalDanishAcademyCalendarSource(BaseEventSource):
 
     @staticmethod
     def _extract_title(card: Tag, anchor: Tag) -> str:
+        def meaningful(value: str) -> bool:
+            clean = " ".join(value.split()).strip()
+            if len(clean) < 4 or clean.casefold() in ACADEMY_TYPE_WORDS:
+                return False
+            # A date range is not a single date: fullmatch(date) misses it.
+            # Remove all date/time metadata before deciding if any title remains.
+            remainder = ACADEMY_DATE_RE.sub(" ", clean)
+            remainder = ACADEMY_TIME_RANGE_RE.sub(" ", remainder)
+            remainder = ACADEMY_TIME_RE.sub(" ", remainder)
+            remainder = re.sub(r"\b(?:dato|date|kl|at)\b", " ", remainder, flags=re.I)
+            return any(char.isalpha() for char in remainder)
+
+        # Explicit headings are stronger evidence than string length.
+        for heading in card.find_all(["h1", "h2", "h3", "h4"]):
+            value = heading.get_text(" ", strip=True)
+            if meaningful(value):
+                return value[:400]
+
         candidates: list[str] = []
         for value in list(card.stripped_strings):
             clean = " ".join(value.split()).strip()
-            lower = clean.casefold()
-            if len(clean) < 4:
-                continue
-            if lower in ACADEMY_TYPE_WORDS:
-                continue
-            if ACADEMY_DATE_RE.fullmatch(clean):
-                continue
-            if ACADEMY_TIME_RANGE_RE.fullmatch(clean) or ACADEMY_TIME_RE.fullmatch(clean):
-                continue
-            if re.fullmatch(r"\d{1,2}[.:]\d{2}\s*[-–]\s*\d{1,2}[.:]\d{2}", clean):
+            if not meaningful(clean):
                 continue
             candidates.append(clean)
 
         anchor_text = " ".join(anchor.stripped_strings).strip()
-        if anchor_text and not ACADEMY_DATE_RE.search(anchor_text):
+        if meaningful(anchor_text) and not ACADEMY_DATE_RE.search(anchor_text):
             candidates.append(anchor_text)
 
         if not candidates:
