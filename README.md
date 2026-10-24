@@ -6,12 +6,12 @@ No more scrolling LinkedIn or checking ten websites so you don't miss a talk, wo
 
 ![CI](https://github.com/Leed131/event_assistant_bot/actions/workflows/ci.yml/badge.svg)
 
+<img src="docs/screenshots/cover.jpg" alt="Event Assistant Bot — menu, new events and add-to-calendar page">
+
 <p>
-  <img src="docs/screenshots/01-menu.png" width="180" alt="Main menu">
-  <img src="docs/screenshots/02-interests.png" width="180" alt="Interests">
-  <img src="docs/screenshots/03-sources.png" width="180" alt="Custom sources">
-  <img src="docs/screenshots/04-ticket-and-reminder.png" width="180" alt="Ticket and reminder">
-  <img src="docs/screenshots/05-registrations-calendar.png" width="180" alt="Registrations and calendar">
+  <img src="docs/screenshots/02-interests.png" width="190" alt="Interests">
+  <img src="docs/screenshots/03-sources.png" width="190" alt="Sources">
+  <img src="docs/screenshots/05-my-events-ticket.png" width="190" alt="My events and saved ticket">
 </p>
 
 ## The problem
@@ -48,7 +48,7 @@ A calm, Scandinavian look shared with my product [MØSE](https://møse.dk): warm
 - **Add-to-calendar page** follows the same palette and supports dark mode.
 - **Avatar options** are in [`docs/brand`](docs/brand).
 
-<img src="docs/screenshots/06-calendar-page.png" width="300" alt="Add-to-calendar page">
+<img src="docs/screenshots/06-calendar.png" width="320" alt="Add-to-calendar page">
 
 ## Architecture
 
