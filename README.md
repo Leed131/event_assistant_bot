@@ -31,7 +31,7 @@ Registration itself always happens on the organizer's website — the bot never 
 ## Features
 
 - Multi-user Telegram profiles with city and interest preferences
-- **Discover**, **This week** and **My registrations** views
+- **Discover**, **This week** and **My events** views
 - Personal sources: add, enable/disable or remove any event website
 - Curated parsers for DAC (Danish Architecture Center), DTU, BLOXHUB, the Royal Danish Academy, CFU, Thoravej 29 and Eventbrite
 - Generic Schema.org `Event` (JSON-LD) parser for any event page
@@ -39,6 +39,16 @@ Registration itself always happens on the organizer's website — the bot never 
 - *I registered* flow, ticket/QR upload (stored as Telegram `file_id`) and notes
 - Add-to-calendar page (Google Calendar link + Apple Calendar `.ics`)
 - Scheduled reminders (configurable, default 7 days before)
+
+## Design
+
+A calm, Scandinavian look shared with my product [MØSE](https://møse.dk): warm paper `#F5F1EB`, ink `#1A1A1A`, IBM Plex typography, thin lines and almost no decoration.
+
+- **Messages** use a simple typographic card — bold title, date, place — with short, quiet button labels.
+- **Add-to-calendar page** follows the same palette and supports dark mode.
+- **Avatar options** are in [`docs/brand`](docs/brand).
+
+<img src="docs/screenshots/06-calendar-page.png" width="300" alt="Add-to-calendar page">
 
 ## Architecture
 

@@ -19,7 +19,7 @@ from app.db import (
     UserEventStatus,
     UserSource,
 )
-from app.event_display import format_event_when
+from app.event_display import event_card
 from app.eventbrite_search import search_eventbrite_events
 from app.source_overrides import parser_for_source
 from app.thoravej_search import search_thoravej29_events
@@ -260,7 +260,8 @@ async def _persist_candidates(db, source: Source, candidates, bot=None) -> int:
             if bot and is_new:
                 await bot.send_message(
                     user.telegram_user_id,
-                    f"🏛 {event.title}\n📅 {format_event_when(event)}\n📍 {event.venue_name or event.city}",
+                    event_card(event, kicker="New for you"),
+                    parse_mode="HTML",
                     reply_markup=_event_actions(user_event.id, event.registration_url),
                 )
 
@@ -269,10 +270,10 @@ async def _persist_candidates(db, source: Source, candidates, bot=None) -> int:
 
 def _event_actions(user_event_id: int, registration_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 Register", url=registration_url)],
+        [InlineKeyboardButton("Register", url=registration_url)],
         [
-            InlineKeyboardButton("✅ I registered", callback_data=f"reg:{user_event_id}"),
-            InlineKeyboardButton("🙈 Not interested", callback_data=f"ignore:{user_event_id}"),
+            InlineKeyboardButton("I registered", callback_data=f"reg:{user_event_id}"),
+            InlineKeyboardButton("Not for me", callback_data=f"ignore:{user_event_id}"),
         ],
     ])
 
@@ -392,7 +393,8 @@ async def send_due_reminders(bot) -> int:
             if due <= now:
                 await bot.send_message(
                     user.telegram_user_id,
-                    f"🔔 Reminder: {event.title}\n📅 {format_event_when(event)}\n📍 {event.venue_name or event.city}",
+                    event_card(event, note=item.note, kicker="Reminder"),
+                    parse_mode="HTML",
                 )
                 item.reminder_sent_at = now
                 sent += 1
