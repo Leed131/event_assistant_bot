@@ -127,43 +127,62 @@ def calendar_page(event_id: int, request: Request) -> str:
 <!doctype html>
 <html lang="en">
 <head>
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Add event to calendar</title>
+  <title>{escape(event.title)} · Add to calendar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin:0; background:#f5f5f5; color:#111; }}
-    .card {{ max-width:560px; margin:28px auto; background:white; padding:26px; border-radius:20px; box-shadow:0 6px 30px rgba(0,0,0,.08); }}
-    h1 {{ font-size:26px; margin:0 0 14px; }}
-    .meta {{ line-height:1.5; color:#444; margin-bottom:24px; }}
-    .btn {{ display:block; text-decoration:none; text-align:center; padding:16px 18px; border-radius:14px; margin:12px 0; font-weight:700; background:#111; color:white; }}
-    .btn.apple {{ background:#0a84ff; }}
-    .btn.secondary {{ background:#e9e9ee; color:#111; }}
-    .hint {{ background:#eef5ff; border-radius:12px; padding:12px 14px; margin:14px 0; font-size:14px; line-height:1.45; }}
-    .fallback {{ font-size:13px; text-align:center; margin-top:14px; color:#666; line-height:1.5; }}
-    .fallback a {{ color:#555; }}
-    .copybox {{ word-break:break-all; font-size:12px; padding:10px; background:#f3f3f3; border-radius:10px; margin-top:10px; user-select:all; }}
+    :root {{ --paper:#F5F1EB; --ink:#1A1A1A; --muted:#6B665F; --line:#D9D2C7; --card:#FBF9F5; }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{ --paper:#1A1A1A; --ink:#F5F1EB; --muted:#A39D94; --line:#3A3734; --card:#222120; }}
+    }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:var(--paper); color:var(--ink);
+           font-family:"IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+           font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased; }}
+    main {{ max-width:520px; margin:0 auto; padding:40px 20px 56px; }}
+    .label {{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12px; letter-spacing:.12em;
+             text-transform:uppercase; color:var(--muted); margin:0 0 20px; }}
+    h1 {{ font-size:28px; line-height:1.2; font-weight:600; letter-spacing:-.01em; margin:0 0 24px; }}
+    dl {{ margin:0 0 32px; border-top:1px solid var(--line); }}
+    .row {{ display:flex; gap:16px; padding:12px 0; border-bottom:1px solid var(--line); }}
+    dt {{ width:72px; flex:none; color:var(--muted); font-size:14px; }}
+    dd {{ margin:0; }}
+    .btn {{ display:block; text-decoration:none; padding:15px 18px; margin:0 0 10px; border:1px solid var(--ink);
+           color:var(--ink); font-weight:500; border-radius:2px; transition:background .15s, color .15s; }}
+    .btn::after {{ content:"→"; float:right; }}
+    .btn.primary {{ background:var(--ink); color:var(--paper); }}
+    .btn:hover {{ background:var(--ink); color:var(--paper); }}
+    .note {{ margin:32px 0 0; padding-top:20px; border-top:1px solid var(--line); font-size:14px; color:var(--muted); }}
+    .note b {{ color:var(--ink); font-weight:500; }}
+    .copy {{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12px; word-break:break-all;
+            background:var(--card); border:1px solid var(--line); padding:10px 12px; margin:10px 0; user-select:all; }}
+    .note a {{ color:var(--ink); }}
   </style>
 </head>
 <body>
-  <div class="card">
+  <main>
+    <p class="label">Add to calendar</p>
     <h1>{escape(event.title)}</h1>
-    <div class="meta">📅 {escape(when)}<br>📍 {escape(location)}</div>
+    <dl>
+      <div class="row"><dt>When</dt><dd>{escape(when)}</dd></div>
+      <div class="row"><dt>Where</dt><dd>{escape(location) or "—"}</dd></div>
+    </dl>
 
-    <div class="hint">
-      <b>iPhone / Apple Calendar:</b> Telegram can preview .ics files without offering Calendar.
-      Use the Safari button first. In Safari, open the calendar file and iOS should offer the normal calendar import flow.
+    <a class="btn primary" href="{escape(safari_url)}">Apple Calendar (open in Safari)</a>
+    <a class="btn" href="{escape(google_url)}">Google Calendar</a>
+    <a class="btn" href="{escape(apple_https_url)}">Open the .ics file here</a>
+    <a class="btn" href="{escape(register)}">Registration page</a>
+
+    <div class="note">
+      <b>On iPhone:</b> Telegram can preview calendar files without offering to add them.
+      Use the Apple Calendar button to open the file in Safari, where iOS shows the usual import screen.
+      If Telegram blocks it, copy this address into Safari:
+      <div class="copy">{escape(apple_https_url)}</div>
+      Or <a href="{fallback_url}">download the .ics file</a>.
     </div>
-
-    <a class="btn apple" href="{escape(safari_url)}">Open Apple Calendar link in Safari</a>
-    <a class="btn secondary" href="{escape(apple_https_url)}">Open .ics here instead</a>
-    <a class="btn secondary" href="{escape(google_url)}">Add to Google Calendar</a>
-    <a class="btn secondary" href="{escape(register)}">Open registration page</a>
-
-    <div class="fallback">
-      If the Safari button is blocked by Telegram, copy this address and paste it into Safari:
-      <div class="copybox">{escape(apple_https_url)}</div>
-      Or <a href="{fallback_url}">download the .ics file</a> as a fallback.
-    </div>
-  </div>
+  </main>
 </body>
 </html>
 """

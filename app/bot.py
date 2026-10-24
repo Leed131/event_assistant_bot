@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from html import escape
 from urllib.parse import urlparse
 
 from sqlalchemy import select
@@ -7,34 +8,34 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 from app.config import settings
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
-from app.event_display import format_event_when
+from app.event_display import event_card
 from app.services import persist_detected_events_for_user
 from app.source_overrides import parser_for_source
 
 
 def menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔎 Discover events", callback_data="discover"), InlineKeyboardButton("📅 This week", callback_data="week")],
-        [InlineKeyboardButton("⭐ My registrations", callback_data="registered")],
-        [InlineKeyboardButton("🌍 My city", callback_data="city"), InlineKeyboardButton("❤️ My interests", callback_data="interests")],
-        [InlineKeyboardButton("🌐 My sources", callback_data="sources")],
+        [InlineKeyboardButton("Discover", callback_data="discover"), InlineKeyboardButton("This week", callback_data="week")],
+        [InlineKeyboardButton("My events", callback_data="registered")],
+        [InlineKeyboardButton("City", callback_data="city"), InlineKeyboardButton("Interests", callback_data="interests")],
+        [InlineKeyboardButton("Sources", callback_data="sources")],
     ])
 
 
 def sources_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add source", callback_data="source:add")],
-        [InlineKeyboardButton("📋 My sources", callback_data="source:list")],
-        [InlineKeyboardButton("⬅️ Main menu", callback_data="main")],
+        [InlineKeyboardButton("Add a source", callback_data="source:add")],
+        [InlineKeyboardButton("View sources", callback_data="source:list")],
+        [InlineKeyboardButton("← Menu", callback_data="main")],
     ])
 
 
 def interests_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add interest", callback_data="interest:add")],
-        [InlineKeyboardButton("➖ Remove interest", callback_data="interest:remove")],
-        [InlineKeyboardButton("📋 My interests", callback_data="interest:list")],
-        [InlineKeyboardButton("⬅️ Main menu", callback_data="main")],
+        [InlineKeyboardButton("Add", callback_data="interest:add")],
+        [InlineKeyboardButton("Remove", callback_data="interest:remove")],
+        [InlineKeyboardButton("View interests", callback_data="interest:list")],
+        [InlineKeyboardButton("← Menu", callback_data="main")],
     ])
 
 
@@ -60,7 +61,7 @@ def get_or_create_user(tg_user) -> User:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_or_create_user(update.effective_user)
     await update.message.reply_text(
-        f"Hi {user.first_name or ''}! I find events before they sell out and keep your registrations, tickets and reminders in one place.",
+        f"Hej {user.first_name or ''}.\n\nI watch the places you care about and bring you the events that match your interests. Your registrations, tickets and reminders stay in one place.",
         reply_markup=menu(),
     )
 
@@ -68,10 +69,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_interests(message, user: User) -> None:
     interests = _interest_list(user.interests)
     if not interests:
-        await message.reply_text("You do not have any interests yet.", reply_markup=interests_menu())
+        await message.reply_text("No interests yet. Add a few topics to start.", reply_markup=interests_menu())
         return
-    formatted = "\n".join(f"• {interest}" for interest in interests)
-    await message.reply_text(f"❤️ Your interests\n\n{formatted}", reply_markup=interests_menu())
+    formatted = "\n".join(f"· {escape(interest)}" for interest in interests)
+    await message.reply_text(f"<b>Your interests</b>\n\n{formatted}", parse_mode="HTML", reply_markup=interests_menu())
 
 
 async def show_sources(message, user: User) -> None:
@@ -84,20 +85,20 @@ async def show_sources(message, user: User) -> None:
             .order_by(Source.name)
         ).all()
 
-        curated_text = "\n".join(f"✅ {source.name}\n{source.url}" for source in curated) if curated else "No curated sources yet."
-        await message.reply_text(f"🏛 Curated sources\n\n{curated_text}")
+        curated_text = "\n\n".join(f"{escape(source.name)}\n{escape(source.url)}" for source in curated) if curated else "No curated sources yet."
+        await message.reply_text(f"<b>Curated sources</b>\n\n{curated_text}", parse_mode="HTML", disable_web_page_preview=True)
 
         if not custom_rows:
-            await message.reply_text("You have no custom sources yet.", reply_markup=sources_menu())
+            await message.reply_text("No personal sources yet.", reply_markup=sources_menu())
             return
 
         for user_source, source in custom_rows:
-            state = "✅ Enabled" if user_source.enabled else "⏸ Disabled"
+            state = "On" if user_source.enabled else "Paused"
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏸ Disable" if user_source.enabled else "▶️ Enable", callback_data=f"source:toggle:{source.id}")],
-                [InlineKeyboardButton("🗑 Remove", callback_data=f"source:remove:{source.id}")],
+                [InlineKeyboardButton("Pause" if user_source.enabled else "Resume", callback_data=f"source:toggle:{source.id}")],
+                [InlineKeyboardButton("Remove", callback_data=f"source:remove:{source.id}")],
             ])
-            await message.reply_text(f"{state} · {source.name}\n{source.url}", reply_markup=keyboard)
+            await message.reply_text(f"{source.name} · {state}\n{source.url}", reply_markup=keyboard, disable_web_page_preview=True)
 
 
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,7 +107,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_or_create_user(q.from_user)
 
     if q.data == "main":
-        await q.message.reply_text("Main menu", reply_markup=menu())
+        await q.message.reply_text("Menu", reply_markup=menu())
         return
 
     if q.data == "interests":
@@ -130,7 +131,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if q.data == "source:add":
         context.user_data["awaiting_source_url"] = True
-        await q.message.reply_text("Вставь ссылку на страницу мероприятий прямо в поле сообщения ниже и отправь её.\n\nНапример: https://example.org/events\n\nМожно также просто прислать любую http/https ссылку боту без нажатия этой кнопки — я распознаю её как новый источник.")
+        await q.message.reply_text("Paste the link to an events page and send it.\n\nExample: https://example.org/events\n\nYou can also send any http/https link at any time — I will treat it as a new source.")
         return
     if q.data == "source:list":
         await show_sources(q.message, user)
@@ -144,7 +145,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             link.enabled = not link.enabled
             db.commit()
-            state = "enabled ✅" if link.enabled else "disabled ⏸"
+            state = "resumed" if link.enabled else "paused"
         await q.message.reply_text(f"Source {state}.", reply_markup=sources_menu())
         return
     if q.data.startswith("source:remove:"):
@@ -154,7 +155,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if link:
                 db.delete(link)
                 db.commit()
-        await q.message.reply_text("🗑 Source removed from your list.", reply_markup=sources_menu())
+        await q.message.reply_text("Source removed.", reply_markup=sources_menu())
         return
 
     with SessionLocal() as db:
@@ -186,21 +187,22 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in items:
                 event = db.get(Event, item.event_id)
                 buttons = [
-                    [InlineKeyboardButton("🔗 Register", url=event.registration_url)],
-                    [InlineKeyboardButton("📅 Add to calendar", url=_calendar_url(event.id))],
+                    [InlineKeyboardButton("Register", url=event.registration_url)],
+                    [InlineKeyboardButton("Add to calendar", url=_calendar_url(event.id))],
                 ]
                 if item.status != UserEventStatus.registered.value:
                     buttons.append([
-                        InlineKeyboardButton("✅ I registered", callback_data=f"reg:{item.id}"),
-                        InlineKeyboardButton("🙈 Not interested", callback_data=f"ignore:{item.id}"),
+                        InlineKeyboardButton("I registered", callback_data=f"reg:{item.id}"),
+                        InlineKeyboardButton("Not for me", callback_data=f"ignore:{item.id}"),
                     ])
                 else:
                     buttons.append([
-                        InlineKeyboardButton("🎟 Show ticket", callback_data=f"ticket:{item.id}"),
-                        InlineKeyboardButton("📝 Add note", callback_data=f"note:{item.id}"),
+                        InlineKeyboardButton("Ticket", callback_data=f"ticket:{item.id}"),
+                        InlineKeyboardButton("Note", callback_data=f"note:{item.id}"),
                     ])
                 await q.message.reply_text(
-                    f"🏛 {event.title}\n📅 {format_event_when(event)}\n📍 {event.venue_name or event.city}\n{item.note or ''}",
+                    event_card(event, note=item.note),
+                    parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
         elif q.data.startswith("reg:"):
@@ -209,12 +211,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item.registered_at = datetime.now(timezone.utc)
             db.commit()
             context.user_data["ticket_for"] = item.id
-            await q.message.reply_text("✅ Saved. Send me the QR image/PDF now, or skip it and add it later.")
+            await q.message.reply_text("Saved to your events.\n\nSend the ticket or QR code (image or PDF) now, or add it later.")
         elif q.data.startswith("ignore:"):
             item = db.get(UserEvent, int(q.data.split(":")[1]))
             item.status = UserEventStatus.ignored.value
             db.commit()
-            await q.message.reply_text("Hidden.")
+            await q.message.reply_text("Hidden. You will not see this event again.")
         elif q.data.startswith("ticket:"):
             item = db.get(UserEvent, int(q.data.split(":")[1]))
             if not item.ticket_file_id:
@@ -254,7 +256,7 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     added.append(item)
             db_user.interests = ",".join(current)
             db.commit()
-        await update.message.reply_text("✅ Added: " + ", ".join(added) if added else "Those interests are already in your list.", reply_markup=interests_menu())
+        await update.message.reply_text("Added: " + ", ".join(added) if added else "Those interests are already in your list.", reply_markup=interests_menu())
         return
 
     if context.user_data.pop("awaiting_interest_remove", False):
@@ -271,7 +273,7 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
             removed = [item for item in current if item.casefold() in remove_keys]
             db_user.interests = ",".join(kept)
             db.commit()
-        await update.message.reply_text("🗑 Removed: " + ", ".join(removed) if removed else "I could not find those interests in your list.", reply_markup=interests_menu())
+        await update.message.reply_text("Removed: " + ", ".join(removed) if removed else "I could not find those interests in your list.", reply_markup=interests_menu())
         return
 
     parsed_text = urlparse(raw_text) if raw_text else None
@@ -283,14 +285,14 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parsed = urlparse(raw_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             context.user_data["awaiting_source_url"] = True
-            await update.message.reply_text("Это не похоже на полную ссылку. Вставь адрес, начинающийся с http:// или https://")
+            await update.message.reply_text("That does not look like a full link. Send an address that starts with http:// or https://")
             return
 
-        await update.message.reply_text("🔎 Проверяю источник…")
+        await update.message.reply_text("Checking the page…")
         try:
             detected_events = await parser_for_source(raw_url, "user").fetch(raw_url)
         except Exception as exc:
-            await update.message.reply_text(f"Не получилось открыть эту страницу ({type(exc).__name__}). Проверь ссылку и попробуй ещё раз.")
+            await update.message.reply_text(f"I could not open this page ({type(exc).__name__}). Check the link and try again.")
             return
 
         hostname = parsed.netloc.removeprefix("www.")
@@ -310,9 +312,9 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if detected_events:
             persist_detected_events_for_user(user.id, source_id, detected_events)
-            await update.message.reply_text(f"✅ Источник добавлен. Я нашёл {len(detected_events)} событий и сохранил их сразу.", reply_markup=sources_menu())
+            await update.message.reply_text(f"Source added. I found {len(detected_events)} upcoming events and saved them.", reply_markup=sources_menu())
         else:
-            await update.message.reply_text("⚠️ Источник сохранён. Пока я не нашёл будущих событий на этой странице. Я всё равно сохраню сайт и буду проверять его дальше.", reply_markup=sources_menu())
+            await update.message.reply_text("Source saved. I found no upcoming events on this page yet, but I will keep checking it.", reply_markup=sources_menu())
         return
 
     with SessionLocal() as db:
@@ -328,13 +330,13 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Please send an image or PDF.")
                 return
             db.commit()
-            await update.message.reply_text("🎟 Ticket saved.")
+            await update.message.reply_text("Ticket saved.")
             return
         if context.user_data.get("note_for"):
             item = db.get(UserEvent, context.user_data.pop("note_for"))
             item.note = update.message.text
             db.commit()
-            await update.message.reply_text("📝 Note saved.")
+            await update.message.reply_text("Note saved.")
             return
         setting = context.user_data.pop("setting", None)
         if setting:
@@ -343,7 +345,7 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.commit()
             await update.message.reply_text("Updated.", reply_markup=menu())
             return
-        await update.message.reply_text("Use the menu below.", reply_markup=menu())
+        await update.message.reply_text("Choose from the menu.", reply_markup=menu())
 
 
 def register_handlers(app):

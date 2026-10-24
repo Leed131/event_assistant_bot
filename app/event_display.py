@@ -21,3 +21,21 @@ def format_event_when(event) -> str:
         if end.date() > start.date():
             return f"{start:%d.%m.%Y} – {end:%d.%m.%Y}"
     return f"{event.start_datetime:%d %b %Y, %H:%M}"
+
+
+def event_card(event, note: str | None = None, kicker: str | None = None) -> str:
+    """Calm, typographic event card (Telegram HTML): title, when, where, optional note."""
+    from html import escape
+
+    lines = []
+    if kicker:
+        lines.append(f"<i>{escape(kicker)}</i>")
+    lines.append(f"<b>{escape(event.title or 'Untitled event')}</b>")
+    lines.append(escape(format_event_when(event)))
+    place = event.venue_name or event.city
+    if place:
+        lines.append(escape(place))
+    if note:
+        lines.append("")
+        lines.append(f"<i>{escape(note)}</i>")
+    return "\n".join(lines)
