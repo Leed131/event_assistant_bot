@@ -12,6 +12,27 @@ from app.event_display import event_card
 from app.services import persist_detected_events_for_user
 from app.source_overrides import parser_for_source
 
+MENU_WORDS = {"start", "menu", "main menu", "cancel", "stop", "back", "меню", "старт", "отмена"}
+PENDING_KEYS = (
+    "awaiting_interest_add",
+    "awaiting_interest_remove",
+    "awaiting_source_url",
+    "setting",
+    "ticket_for",
+    "note_for",
+)
+
+
+def is_menu_word(text: str | None) -> bool:
+    """Plain words like "Start" or "Menu" should always bring the user back to the menu."""
+    return (text or "").strip().lstrip("/").casefold() in MENU_WORDS
+
+
+def reset_pending(user_data: dict) -> None:
+    """Forget any half-finished flow (adding an interest, a note, a ticket, ...)."""
+    for key in PENDING_KEYS:
+        user_data.pop(key, None)
+
 
 def menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -59,6 +80,7 @@ def get_or_create_user(tg_user) -> User:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_pending(context.user_data)
     user = get_or_create_user(update.effective_user)
     await update.message.reply_text(
         f"Hej {user.first_name or ''}.\n\nI watch the places you care about and bring you the events that match your interests. Your registrations, tickets and reminders stay in one place.",
@@ -107,6 +129,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_or_create_user(q.from_user)
 
     if q.data == "main":
+        reset_pending(context.user_data)
         await q.message.reply_text("Menu", reply_markup=menu())
         return
 
@@ -238,6 +261,11 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_or_create_user(update.effective_user)
     raw_text = (update.message.text or "").strip()
 
+    if is_menu_word(raw_text):
+        reset_pending(context.user_data)
+        await update.message.reply_text("Menu", reply_markup=menu())
+        return
+
     if context.user_data.pop("awaiting_interest_add", False):
         new_items = _interest_list(raw_text)
         if not new_items:
@@ -348,8 +376,14 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Choose from the menu.", reply_markup=menu())
 
 
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_pending(context.user_data)
+    await update.message.reply_text("Menu", reply_markup=menu())
+
+
 def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler(["menu", "cancel"], show_menu))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, incoming))
 
