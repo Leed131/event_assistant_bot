@@ -8,7 +8,6 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 
-
 logger = logging.getLogger(__name__)
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 USER_AGENT = "EventAssistantBot/0.5"

@@ -1,6 +1,6 @@
 import asyncio
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
@@ -8,8 +8,7 @@ import httpx
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
-from app.sources import BaseEventSource, EventCandidate, GenericJsonLdSource, USER_AGENT
-
+from app.sources import USER_AGENT, BaseEventSource, EventCandidate, GenericJsonLdSource
 
 COPENHAGEN_TZ = ZoneInfo("Europe/Copenhagen")
 ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")

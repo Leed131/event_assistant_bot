@@ -19,7 +19,6 @@ from app.sources import (
 )
 from app.thoravej_search import search_thoravej29_events
 
-
 DATE_RANGE_RE = re.compile(
     r"\b(?P<start_day>\d{1,2})\.?\s*[-–]\s*(?P<end_day>\d{1,2})\.?\s+"
     r"(?P<month>jan(?:uar)?|feb(?:ruar)?|mar(?:ts)?|apr(?:il)?|maj|jun(?:i)?|jul(?:i)?|aug(?:ust)?|sep(?:tember)?|okt(?:ober)?|nov(?:ember)?|dec(?:ember)?)"

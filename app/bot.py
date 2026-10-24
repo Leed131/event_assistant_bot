@@ -1,4 +1,3 @@
-from app.event_display import format_event_when
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -8,6 +7,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Mes
 
 from app.config import settings
 from app.db import Event, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
+from app.event_display import format_event_when
 from app.services import persist_detected_events_for_user
 from app.source_overrides import parser_for_source
 

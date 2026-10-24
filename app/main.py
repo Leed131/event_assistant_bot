@@ -9,7 +9,6 @@ from app.config import settings
 from app.db import engine, init_db
 from app.services import refresh_ai_discovery, refresh_curated_sources, send_due_reminders
 
-
 POLLING_LOCK_ID = 918273645
 LOCK_RETRY_SECONDS = 5
 

@@ -8,7 +8,6 @@ from app.brave_discovery import discover_event_payload
 from app.config import settings
 from app.sources import EventCandidate
 
-
 logger = logging.getLogger(__name__)
 
 

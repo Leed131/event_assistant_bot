@@ -1,4 +1,3 @@
-from app.event_display import format_event_when
 import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -10,11 +9,20 @@ from app.academy_search import search_royal_danish_academy_events
 from app.bloxhub_source import BloxhubSource
 from app.config import settings
 from app.dac_search import search_dac_talks
-from app.db import Event, ServiceRunState, SessionLocal, Source, User, UserEvent, UserEventStatus, UserSource
+from app.db import (
+    Event,
+    ServiceRunState,
+    SessionLocal,
+    Source,
+    User,
+    UserEvent,
+    UserEventStatus,
+    UserSource,
+)
+from app.event_display import format_event_when
 from app.eventbrite_search import search_eventbrite_events
 from app.source_overrides import parser_for_source
 from app.thoravej_search import search_thoravej29_events
-
 
 logger = logging.getLogger(__name__)
 # Keep the legacy key so the existing weekly clock survives this migration from
