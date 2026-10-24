@@ -1,4 +1,3 @@
-from app.event_display import format_event_when
 from datetime import datetime, timedelta, timezone
 from html import escape
 from urllib.parse import urlencode
@@ -7,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from app.db import Event, SessionLocal
-
+from app.event_display import format_event_when
 
 app = FastAPI(title="Event Assistant Calendar")
 

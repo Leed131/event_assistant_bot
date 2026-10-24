@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 from app.dtu_source import DTUSource
 from app.source_overrides import parser_for_source
 
-
 COPENHAGEN_TZ = ZoneInfo("Europe/Copenhagen")
 
 

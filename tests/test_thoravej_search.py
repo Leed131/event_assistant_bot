@@ -4,7 +4,6 @@ from zoneinfo import ZoneInfo
 from app.source_overrides import Thoravej29Source, parser_for_source
 from app.thoravej_search import _events_from_payload
 
-
 COPENHAGEN_TZ = ZoneInfo("Europe/Copenhagen")
 
 

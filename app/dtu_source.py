@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup, Tag
 
 from app.sources import USER_AGENT, BaseEventSource, EventCandidate
 
-
 COPENHAGEN_TZ = ZoneInfo("Europe/Copenhagen")
 
 DTU_MONTHS = {

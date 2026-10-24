@@ -11,7 +11,6 @@ import httpx
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
-
 USER_AGENT = "EventAssistantBot/0.4"
 
 MONTHS_DA = {

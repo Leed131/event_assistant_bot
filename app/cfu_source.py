@@ -6,8 +6,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from bs4 import BeautifulSoup, Tag
 
-from app.sources import BaseEventSource, EventCandidate, USER_AGENT
-
+from app.sources import USER_AGENT, BaseEventSource, EventCandidate
 
 COPENHAGEN_TZ = ZoneInfo("Europe/Copenhagen")
 LISTING_URL = "https://cfu.kp.dk/find-kurser/"

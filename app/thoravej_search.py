@@ -8,7 +8,6 @@ from dateutil import parser as date_parser
 from app.brave_discovery import discover_event_payload
 from app.sources import EventCandidate
 
-
 logger = logging.getLogger(__name__)
 COPENHAGEN_TZ = ZoneInfo("Europe/Copenhagen")
 THORAVEJ_EVENTS_URL = "https://www.thoravej29.dk/da/events"

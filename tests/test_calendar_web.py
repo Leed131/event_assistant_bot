@@ -22,10 +22,11 @@ def _event():
 def test_calendar_page_uses_direct_ics_for_apple(monkeypatch):
     monkeypatch.setattr(calendar_web, "_get_event", lambda event_id: _event())
 
-    html = calendar_web.calendar_page(42)
+    request = SimpleNamespace(base_url="https://calendar.example.com/")
+    html = calendar_web.calendar_page(42, request)
 
-    assert 'href="/calendar/42/event.ics"' in html
-    assert "Add to Apple Calendar" in html
+    assert "https://calendar.example.com/calendar/42/event.ics" in html
+    assert "Apple Calendar" in html
     assert "shortcuts://" not in html
 
 
